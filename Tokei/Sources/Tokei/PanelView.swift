@@ -746,27 +746,38 @@ struct PanelView: View {
                     }
                     .padding(.horizontal, 10).padding(.vertical, 5)
 
-                    // 添加远程设备
+                    // 添加设备
                     if store.syncEnabled && !syncDir.isEmpty {
-                        let repoUrl = Self.gitRemoteUrl(syncDir)
-                        let hasRemote = !repoUrl.contains("未配置")
+                        let dataRepo = Self.gitRemoteUrl(syncDir)
+                        let hasRemote = !dataRepo.contains("未配置")
+                        let projectDir = (DataLoader.scriptPath as NSString).deletingLastPathComponent
                         Rectangle().fill(Color.primary.opacity(0.06)).frame(height: 1)
-                        VStack(alignment: .leading, spacing: 6) {
+                        VStack(alignment: .leading, spacing: 8) {
                             HStack(spacing: 5) {
                                 Image(systemName: "plus.circle").font(.system(size: 10, weight: .semibold))
                                     .foregroundStyle(Theme.hermes)
-                                Text("添加远程设备")
+                                Text("添加设备")
                                     .font(.system(size: 10, weight: .semibold))
                                     .foregroundStyle(Theme.tSecondary)
                             }
+
                             if hasRemote {
-                                Text("复制给远程 Agent 或粘贴到远程终端:")
-                                    .font(.system(size: 9)).foregroundStyle(Theme.tTertiary)
-                                copyBlock("git clone \(repoUrl) ~/.tokei/sync && echo '{\"sync_dir\":\"~/.tokei/sync\",\"device_id\":\"'$(hostname -s)'\"}' > ~/.tokei/config.json && (crontab -l 2>/dev/null; echo '*/5 * * * * cd ~/.tokei/sync && python3 usage.30s.py --json >/dev/null && git add -A && git diff --cached --quiet || git commit -qm sync && git push -q') | crontab -")
+                                // Mac: 装 app + 选同一个数据仓库
+                                Text("另一台 Mac:").font(.system(size: 9, weight: .medium)).foregroundStyle(Theme.tSecondary)
+                                Text("安装 Tokei.app → 设置 → 多设备同步 → 目录选择同一个数据仓库")
+                                    .font(.system(size: 8.5)).foregroundStyle(Theme.tTertiary)
+                                    .fixedSize(horizontal: false, vertical: true)
+
+                                Rectangle().fill(Color.primary.opacity(0.04)).frame(height: 1)
+
+                                // 远程服务器: 一条命令
+                                Text("远程 Linux:").font(.system(size: 9, weight: .medium)).foregroundStyle(Theme.tSecondary)
+                                copyBlock("git clone \(dataRepo) ~/.tokei/sync && cp ~/.tokei/sync/usage.30s.py ~/.tokei/ 2>/dev/null; echo '{\"sync_dir\":\"~/.tokei/sync\",\"device_id\":\"'$(hostname -s)'\"}' > ~/.tokei/config.json && (crontab -l 2>/dev/null; echo '*/5 * * * * cd ~/.tokei/sync && python3 ~/.tokei/usage.30s.py --json >/dev/null && git pull -q && git add -A && git diff --cached --quiet || git commit -qm sync && git push -q') | crontab -")
                             } else {
-                                Text("同步目录未关联 Git 仓库,对 Agent 说:")
+                                Text("数据目录未关联 Git 仓库")
                                     .font(.system(size: 9)).foregroundStyle(Theme.tTertiary)
-                                copyBlock("读取 \(Self.skillPath) 并帮我配置 Tokei 同步")
+                                Text("对 Agent 说:").font(.system(size: 9)).foregroundStyle(Theme.tTertiary)
+                                copyBlock("读取 \(Self.skillPath) 并帮我创建 Tokei 私有数据仓库,配置多设备同步")
                             }
                         }
                         .padding(.horizontal, 10).padding(.vertical, 5)
@@ -774,16 +785,18 @@ struct PanelView: View {
                 }
             }
 
-            // 远程采集提示
+            // 多设备/远程提示
             if !store.syncEnabled {
                 Rectangle().fill(Color.primary.opacity(0.06)).frame(height: 1)
-                settingsSection("antenna.radiowaves.left.and.right", "远程采集") {
+                settingsSection("antenna.radiowaves.left.and.right", "多设备 / 远程采集") {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("远程 Hermes / OpenClaw 等数据需要同步采集")
+                        Text("多台 Mac 或远程服务器的数据通过私有 Git 仓库同步,每台设备独立采集、自动加和")
                             .font(.system(size: 9)).foregroundStyle(Theme.tTertiary)
-                        Text("对 Agent 说:")
-                            .font(.system(size: 9)).foregroundStyle(Theme.tTertiary)
-                        copyBlock("读取 \(Self.skillPath) 并按照里面的步骤帮我配置 Tokei 多设备同步")
+                            .fixedSize(horizontal: false, vertical: true)
+                        Text("对 Agent 说:").font(.system(size: 9)).foregroundStyle(Theme.tTertiary)
+                        copyBlock("读取 \(Self.skillPath) 帮我配置 Tokei 多设备同步")
+                        Text("或手动:开启上方「多设备同步」→ 选择数据仓库目录")
+                            .font(.system(size: 8.5)).foregroundStyle(Theme.tTertiary)
                     }
                     .padding(.horizontal, 10).padding(.vertical, 5)
                 }
