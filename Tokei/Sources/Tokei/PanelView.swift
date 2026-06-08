@@ -94,8 +94,20 @@ struct PanelView: View {
                                   hasGrok: hasGrok, hasQoder: hasQoder, hasHermes: hasHermes,
                                   hasClaw: hasClaw, hasOCode: hasOCode)
             } else {
-                HStack { Spacer(); ProgressView().controlSize(.small); Spacer() }
-                    .frame(height: 90)
+                HStack(spacing: 8) {
+                    Spacer()
+                    if let error = store.loadError {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(Theme.claude)
+                        Text(error)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(Theme.tSecondary)
+                    } else {
+                        ProgressView().controlSize(.small)
+                    }
+                    Spacer()
+                }
+                .frame(height: 90)
             }
             footer
         }

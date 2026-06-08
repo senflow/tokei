@@ -252,6 +252,60 @@ def _save_scan_cache(cache):
         pass
 
 
+def _empty_claude():
+    ranges = {k: {"in": 0, "out": 0, "cr": 0, "cw": 0, "cost": 0.0,
+                  "models": {}, "sessions": set()} for k in RANGE_KEYS}
+    return {"ranges": ranges, "cur": {"in": 0, "out": 0, "cr": 0, "cw": 0, "name": "-"}}
+
+
+def _empty_codex():
+    ranges = {k: {"in": 0, "cached": 0, "out": 0, "reason": 0,
+                  "cost": 0.0, "sessions": set()} for k in RANGE_KEYS}
+    return {"ranges": ranges, "limits": None, "plan": None}
+
+
+def _empty_gemini():
+    ranges = {k: {"in": 0, "out": 0, "cached": 0, "thoughts": 0,
+                  "cost": 0.0, "models": {}, "sessions": set()} for k in RANGE_KEYS}
+    return {"ranges": ranges}
+
+
+def _empty_grok():
+    ranges = {k: {"tokens": 0, "sessions": set()} for k in RANGE_KEYS}
+    return {"ranges": ranges, "model": None}
+
+
+def _empty_qoder():
+    ranges = {k: {"in": 0, "out": 0, "sessions": 0, "calls": 0,
+                  "duration": 0, "ctx_sum": 0.0, "ctx_count": 0} for k in RANGE_KEYS}
+    return {"ranges": ranges, "quota": None, "model": None}
+
+
+def _empty_hermes():
+    ranges = {k: {"in": 0, "out": 0, "cr": 0, "cw": 0, "reason": 0,
+                  "cost": 0.0, "sessions": 0, "models": {}} for k in RANGE_KEYS}
+    return {"ranges": ranges}
+
+
+def _empty_openclaw():
+    ranges = {k: {"tasks": 0, "completed": 0, "failed": 0} for k in RANGE_KEYS}
+    return {"ranges": ranges}
+
+
+def _empty_opencode():
+    ranges = {k: {"in": 0, "out": 0, "cr": 0, "cw": 0, "reason": 0,
+                  "cost": 0.0, "sessions": set(), "models": {}} for k in RANGE_KEYS}
+    return {"ranges": ranges}
+
+
+def _safe_scan(name, fn, fallback, errors):
+    try:
+        return fn()
+    except Exception as e:
+        errors[name] = f"{type(e).__name__}: {e}"
+        return fallback()
+
+
 # ---------- Claude Code ----------
 def scan_claude(bounds, cache):
     fc = cache.setdefault("claude", {})
@@ -648,7 +702,7 @@ def scan_qoder(bounds, cache):
     import sqlite3 as _sqlite3
     fc = cache.setdefault("qoder", {})
     empty = {k: {"in": 0, "out": 0, "sessions": 0, "calls": 0,
-                 "duration": 0, "ctx_ratio": 0.0}
+                 "duration": 0, "ctx_sum": 0.0, "ctx_count": 0}
              for k in RANGE_KEYS}
     if not os.path.isfile(_QODER_DB):
         return {"ranges": empty}
@@ -1080,14 +1134,15 @@ def scan_claude_plan():
 def compute():
     bounds = range_bounds()
     cache = _load_scan_cache()
-    cc = scan_claude(bounds, cache)
-    cx = scan_codex(bounds, cache)
-    gm = scan_gemini(bounds)
-    gk = scan_grok(bounds)
-    qd = scan_qoder(bounds, cache)
-    hm = scan_hermes(bounds, cache)
-    oc = scan_openclaw(bounds, cache)
-    ocode = scan_opencode(bounds, cache)
+    errors = {}
+    cc = _safe_scan("claude", lambda: scan_claude(bounds, cache), _empty_claude, errors)
+    cx = _safe_scan("codex", lambda: scan_codex(bounds, cache), _empty_codex, errors)
+    gm = _safe_scan("gemini", lambda: scan_gemini(bounds), _empty_gemini, errors)
+    gk = _safe_scan("grok", lambda: scan_grok(bounds), _empty_grok, errors)
+    qd = _safe_scan("qoder", lambda: scan_qoder(bounds, cache), _empty_qoder, errors)
+    hm = _safe_scan("hermes", lambda: scan_hermes(bounds, cache), _empty_hermes, errors)
+    oc = _safe_scan("openclaw", lambda: scan_openclaw(bounds, cache), _empty_openclaw, errors)
+    ocode = _safe_scan("opencode", lambda: scan_opencode(bounds, cache), _empty_opencode, errors)
     _save_scan_cache(cache)
 
     def claude_range(b):
@@ -1126,9 +1181,11 @@ def compute():
         return {"tokens": b["tokens"], "sessions": len(b["sessions"])}
 
     def qoder_range(b):
-        ctx = (b["ctx_sum"] / b["ctx_count"] * 100) if b["ctx_count"] else 0.0
-        return {"in": b["in"], "out": b["out"], "sessions": b["sessions"],
-                "calls": b["calls"], "duration": b["duration"], "ctx": ctx}
+        ctx_count = b.get("ctx_count", 0)
+        ctx = (b.get("ctx_sum", 0.0) / ctx_count * 100) if ctx_count else 0.0
+        return {"in": b.get("in", 0), "out": b.get("out", 0),
+                "sessions": b.get("sessions", 0), "calls": b.get("calls", 0),
+                "duration": b.get("duration", 0), "ctx": ctx}
 
     cranges = {k: claude_range(cc["ranges"][k]) for k in RANGE_KEYS}
     xranges = {k: codex_range(cx["ranges"][k]) for k in RANGE_KEYS}
@@ -1169,9 +1226,9 @@ def compute():
     r5 = (lim.get("primary") or {}).get("resets_at")
     rw = (lim.get("secondary") or {}).get("resets_at")
 
-    plan = scan_claude_plan() or {}
+    plan = _safe_scan("claude_plan", scan_claude_plan, lambda: {}, errors) or {}
 
-    return {
+    result = {
         "claude": {
             "ranges": cranges,
             "session_name": cur["name"], "session_total": cur_total,
@@ -1205,6 +1262,9 @@ def compute():
             "ranges": ocranges,
         },
     }
+    if errors:
+        result["_errors"] = errors
+    return result
 
 
 _TOKEI_CONFIG = os.path.join(HOME, ".tokei", "config.json")

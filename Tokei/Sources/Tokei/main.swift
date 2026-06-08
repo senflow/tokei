@@ -5,6 +5,7 @@ import Combine
 final class Store: ObservableObject {
     @Published var usage: Usage?
     @Published var lastUpdated: String = "加载中…"
+    @Published var loadError: String?
     @Published var peers: [PeerDevice] = []
     @Published var syncing = false
 
@@ -19,7 +20,13 @@ final class Store: ObservableObject {
     func refresh() {
         DataLoader.load { [weak self] u in
             guard let self = self else { return }
-            guard var local = u else { return }
+            guard var local = u else {
+                self.loadError = "读取用量失败"
+                self.lastUpdated = "加载失败"
+                (NSApp.delegate as? AppDelegate)?.updateStatusTitle()
+                return
+            }
+            self.loadError = nil
             if self.syncEnabled && self.showAllDevices {
                 let p = self.syncManager.loadPeers()
                 self.peers = p
