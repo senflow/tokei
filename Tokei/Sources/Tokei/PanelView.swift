@@ -938,6 +938,17 @@ struct PanelView: View {
                     .padding(.horizontal, 10).padding(.vertical, 5)
                 }
             }
+
+            Rectangle().fill(Color.primary.opacity(0.06)).frame(height: 1)
+
+            HStack {
+                Spacer()
+                Text("Made by 岚叔")
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(Theme.tTertiary)
+                Spacer()
+            }
+            .padding(.top, 2)
         }
         .padding(14)
         .frame(width: 260)

@@ -1,0 +1,1068 @@
+<!DOCTYPE html>
+<html lang="en" data-lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tokei 時計 — AI Coding Usage Monitor for macOS</title>
+<meta name="description" content="Tokei is a macOS menu bar app that tracks usage, cost and performance across 8 AI coding tools. Privacy-first, real-time, beautiful.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>時</text></svg>">
+<style>
+/* ═══════════════════════════════════════════════════════
+   RESET & VARIABLES
+   ═══════════════════════════════════════════════════════ */
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+@property --angle{syntax:'<angle>';initial-value:0deg;inherits:false}
+@property --hue{syntax:'<angle>';initial-value:0deg;inherits:false}
+
+:root{
+  --bg:#08080A;
+  --bg2:#0E0E12;
+  --surface:rgba(255,255,255,0.035);
+  --surface-h:rgba(255,255,255,0.065);
+  --border:rgba(255,255,255,0.06);
+  --border-h:rgba(255,255,255,0.14);
+  --t1:#F5F5F7;
+  --t2:rgba(255,255,255,0.62);
+  --t3:rgba(255,255,255,0.38);
+  --coral:#EB8566;
+  --blue:#6BAEFA;
+  --lavender:#9E85EB;
+  --amber:#E6BF59;
+  --emerald:#66D199;
+  --rose:#D97090;
+  --cyan:#4EC9B0;
+  --silver:#A8ABB3;
+  --r:18px;
+}
+
+html{scroll-behavior:smooth;-webkit-font-smoothing:antialiased}
+body{
+  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","Helvetica Neue",sans-serif;
+  background:var(--bg);color:var(--t1);line-height:1.6;overflow-x:hidden;
+}
+a{color:inherit;text-decoration:none}
+.container{max-width:1100px;margin:0 auto;padding:0 24px}
+
+/* ── i18n ── */
+[data-lang="en"] .zh{display:none}
+[data-lang="zh"] .en{display:none}
+
+/* ═══════════════════════════════════════════════════════
+   FLUID DIAMOND GRADIENT BACKGROUND
+   ═══════════════════════════════════════════════════════ */
+.fluid-canvas{
+  position:absolute;top:-30%;left:50%;transform:translateX(-50%);
+  width:min(900px,140vw);height:min(900px,140vw);
+  pointer-events:none;z-index:0;
+  filter:blur(100px) saturate(1.6);
+  opacity:.55;
+}
+.blob{
+  position:absolute;border-radius:50%;
+  mix-blend-mode:screen;
+}
+.b1{
+  width:55%;height:55%;top:10%;left:8%;
+  background:radial-gradient(circle,var(--coral) 0%,transparent 70%);
+  animation:drift1 12s ease-in-out infinite alternate;
+}
+.b2{
+  width:45%;height:45%;top:30%;right:5%;
+  background:radial-gradient(circle,var(--lavender) 0%,transparent 70%);
+  animation:drift2 14s ease-in-out infinite alternate;
+}
+.b3{
+  width:40%;height:40%;bottom:8%;left:25%;
+  background:radial-gradient(circle,var(--blue) 0%,transparent 70%);
+  animation:drift3 10s ease-in-out infinite alternate;
+}
+.b4{
+  width:35%;height:35%;top:15%;left:40%;
+  background:radial-gradient(circle,var(--amber) 0%,transparent 65%);
+  animation:drift4 16s ease-in-out infinite alternate;
+}
+.b5{
+  width:30%;height:30%;bottom:20%;right:15%;
+  background:radial-gradient(circle,var(--emerald) 0%,transparent 65%);
+  animation:drift1 18s ease-in-out infinite alternate-reverse;
+}
+@keyframes drift1{0%{transform:translate(0,0) scale(1)}100%{transform:translate(60px,-40px) scale(1.15)}}
+@keyframes drift2{0%{transform:translate(0,0) scale(1)}100%{transform:translate(-50px,50px) scale(1.2)}}
+@keyframes drift3{0%{transform:translate(0,0) scale(1.1)}100%{transform:translate(40px,-60px) scale(0.9)}}
+@keyframes drift4{0%{transform:translate(0,0) scale(1)}100%{transform:translate(-30px,30px) scale(1.25)}}
+
+/* diamond shimmer overlay */
+.diamond-shimmer{
+  position:absolute;top:-10%;left:50%;transform:translateX(-50%);
+  width:600px;height:600px;
+  pointer-events:none;z-index:1;
+  background:conic-gradient(from var(--angle),
+    transparent, rgba(255,255,255,.06) 10%, transparent 20%,
+    rgba(255,255,255,.04) 40%, transparent 50%,
+    rgba(255,255,255,.08) 70%, transparent 80%,
+    rgba(255,255,255,.03) 95%, transparent);
+  border-radius:50%;
+  animation:shimmer-rotate 8s linear infinite;
+  filter:blur(40px);
+  mix-blend-mode:overlay;
+}
+@keyframes shimmer-rotate{to{--angle:360deg}}
+
+/* ═══════════════════════════════════════════════════════
+   NAV
+   ═══════════════════════════════════════════════════════ */
+nav{
+  position:fixed;top:0;left:0;right:0;z-index:100;
+  padding:14px 0;
+  background:rgba(8,8,10,0.6);
+  backdrop-filter:blur(24px) saturate(1.8);
+  -webkit-backdrop-filter:blur(24px) saturate(1.8);
+  border-bottom:1px solid var(--border);
+}
+nav .container{display:flex;align-items:center;justify-content:space-between}
+.nav-brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:17px;letter-spacing:-.01em}
+.nav-logo{
+  width:30px;height:30px;border-radius:8px;
+  background:linear-gradient(135deg,var(--coral),#D46A4E);
+  display:flex;align-items:center;justify-content:center;
+  font-size:16px;color:#fff;
+}
+.nav-right{display:flex;align-items:center;gap:24px}
+.nav-links{display:flex;gap:28px}
+.nav-links a{font-size:13.5px;color:var(--t2);transition:color .2s}
+.nav-links a:hover{color:var(--t1)}
+.lang-btn{
+  padding:5px 12px;font-size:12px;font-weight:600;
+  background:var(--surface);border:1px solid var(--border);
+  border-radius:6px;color:var(--t2);cursor:pointer;
+  transition:all .2s;letter-spacing:.02em;
+}
+.lang-btn:hover{background:var(--surface-h);color:var(--t1)}
+.nav-cta{
+  padding:7px 16px;font-size:13px;font-weight:600;
+  background:var(--coral);color:#fff;border-radius:8px;
+  transition:all .2s;display:inline-flex;align-items:center;gap:5px;
+}
+.nav-cta:hover{background:#D46A4E;transform:translateY(-1px);box-shadow:0 4px 20px rgba(235,133,102,.3)}
+@media(max-width:768px){.nav-links{display:none}}
+
+/* ═══════════════════════════════════════════════════════
+   REVEAL ANIMATIONS
+   ═══════════════════════════════════════════════════════ */
+.rv{opacity:0;transform:translateY(40px);transition:opacity .8s cubic-bezier(.16,1,.3,1),transform .8s cubic-bezier(.16,1,.3,1)}
+.rv.vis{opacity:1;transform:translateY(0)}
+.rv-d1{transition-delay:.12s}.rv-d2{transition-delay:.24s}.rv-d3{transition-delay:.36s}
+.rv-d4{transition-delay:.48s}.rv-d5{transition-delay:.6s}.rv-d6{transition-delay:.72s}
+.rv-d7{transition-delay:.84s}.rv-d8{transition-delay:.96s}.rv-d9{transition-delay:1.08s}
+
+/* ═══════════════════════════════════════════════════════
+   HERO
+   ═══════════════════════════════════════════════════════ */
+.hero{
+  position:relative;min-height:100vh;
+  display:flex;align-items:center;
+  padding:160px 0 100px;overflow:hidden;
+}
+.hero .container{position:relative;z-index:2;text-align:center}
+.hero-badge{
+  display:inline-flex;align-items:center;gap:8px;
+  padding:5px 16px 5px 8px;
+  background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);
+  border-radius:100px;font-size:12.5px;color:var(--t2);margin-bottom:36px;
+}
+.hero-badge .pulse{
+  width:7px;height:7px;border-radius:50%;background:var(--emerald);
+  animation:pulse 2s ease-in-out infinite;
+}
+@keyframes pulse{0%,100%{opacity:1;box-shadow:0 0 0 0 rgba(102,209,153,.4)}50%{opacity:.5;box-shadow:0 0 0 6px transparent}}
+.hero h1{
+  font-size:clamp(56px,10vw,110px);
+  font-weight:800;letter-spacing:-.05em;line-height:.95;
+  margin-bottom:6px;
+}
+.hero-title-glow{
+  background:linear-gradient(135deg,var(--coral) 0%,#F0A888 25%,var(--lavender) 50%,var(--blue) 75%,var(--emerald) 100%);
+  background-size:300% 300%;
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;
+  background-clip:text;
+  animation:title-shift 6s ease-in-out infinite;
+}
+@keyframes title-shift{0%,100%{background-position:0% 50%}50%{background-position:100% 50%}}
+
+.hero .kanji{
+  font-size:clamp(36px,6vw,70px);
+  font-weight:300;letter-spacing:.05em;
+  color:var(--t3);
+}
+.hero .tagline{
+  font-size:clamp(18px,2.8vw,26px);font-weight:500;
+  color:var(--t2);letter-spacing:-.01em;margin:20px 0 16px;
+}
+.hero .desc{
+  font-size:clamp(14px,1.6vw,17px);color:var(--t3);
+  max-width:520px;margin:0 auto 44px;line-height:1.7;
+}
+.hero-btns{display:flex;gap:14px;justify-content:center;flex-wrap:wrap}
+.btn-p{
+  display:inline-flex;align-items:center;gap:8px;
+  padding:14px 32px;font-size:15px;font-weight:600;
+  background:linear-gradient(135deg,var(--coral),#D46A4E);
+  color:#fff;border-radius:12px;border:none;cursor:pointer;
+  transition:all .3s cubic-bezier(.16,1,.3,1);
+  box-shadow:0 2px 20px rgba(235,133,102,.2);
+  position:relative;overflow:hidden;
+}
+.btn-p::before{
+  content:'';position:absolute;inset:0;
+  background:linear-gradient(135deg,transparent 30%,rgba(255,255,255,.15) 50%,transparent 70%);
+  transform:translateX(-100%);transition:transform .5s;
+}
+.btn-p:hover::before{transform:translateX(100%)}
+.btn-p:hover{transform:translateY(-2px);box-shadow:0 8px 40px rgba(235,133,102,.35)}
+.btn-s{
+  display:inline-flex;align-items:center;gap:8px;
+  padding:14px 32px;font-size:15px;font-weight:500;
+  background:var(--surface);border:1px solid var(--border);
+  color:var(--t1);border-radius:12px;cursor:pointer;transition:all .25s;
+}
+.btn-s:hover{background:var(--surface-h);border-color:var(--border-h)}
+
+/* ═══════════════════════════════════════════════════════
+   HERO MOCKUP — 3D perspective
+   ═══════════════════════════════════════════════════════ */
+.hero-mock-wrap{
+  margin-top:72px;perspective:1200px;
+}
+.hero-mock{
+  max-width:680px;margin:0 auto;
+  transform:rotateX(8deg) rotateY(-2deg);
+  transform-style:preserve-3d;
+  transition:transform .6s cubic-bezier(.16,1,.3,1);
+  animation:mock-float 6s ease-in-out infinite;
+}
+.hero-mock:hover{transform:rotateX(2deg) rotateY(0deg) scale(1.02)}
+@keyframes mock-float{0%,100%{transform:rotateX(8deg) rotateY(-2deg) translateY(0)}50%{transform:rotateX(6deg) rotateY(-1deg) translateY(-10px)}}
+.mock-win{
+  background:rgba(14,14,18,.9);
+  border:1px solid rgba(255,255,255,.08);
+  border-radius:var(--r);overflow:hidden;
+  box-shadow:
+    0 0 0 1px rgba(255,255,255,.03),
+    0 30px 80px -15px rgba(0,0,0,.6),
+    0 0 160px -30px rgba(235,133,102,.12);
+  backdrop-filter:blur(8px);
+}
+.mock-bar{
+  display:flex;align-items:center;gap:7px;
+  padding:11px 15px;
+  background:rgba(255,255,255,.02);
+  border-bottom:1px solid var(--border);
+}
+.dot{width:11px;height:11px;border-radius:50%}
+.dot-r{background:#FF5F57}.dot-y{background:#FFBD2E}.dot-g{background:#28CA41}
+.mock-bar span{flex:1;text-align:center;font-size:11px;color:var(--t3);margin-right:40px}
+.mock-body{padding:18px;display:flex;flex-direction:column;gap:14px}
+.mock-row{display:flex;gap:11px}
+.mc{
+  flex:1;padding:13px;
+  background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.05);
+  border-radius:12px;
+}
+.mc-l{font-size:10px;color:var(--t3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:5px}
+.mc-v{font-size:20px;font-weight:700;letter-spacing:-.02em}
+.mc-s{font-size:10px;color:var(--t3);margin-top:3px}
+
+/* mini ring */
+.mini-ring{width:46px;height:46px;margin:0 auto;position:relative}
+.mini-ring svg{width:100%;height:100%;transform:rotate(-90deg)}
+.mini-ring .track{fill:none;stroke:rgba(255,255,255,.08);stroke-width:4}
+.mini-ring .fill{fill:none;stroke:var(--coral);stroke-width:4;stroke-linecap:round;
+  stroke-dasharray:126;stroke-dashoffset:28;transition:stroke-dashoffset 1.5s cubic-bezier(.16,1,.3,1)}
+.mini-ring .val{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+  font-size:11px;font-weight:700;color:var(--coral)}
+
+/* bars */
+.bars{display:flex;gap:3px;align-items:flex-end;height:36px;margin-top:6px}
+.bar{flex:1;border-radius:2px 2px 0 0;animation:bar-up 1.2s cubic-bezier(.16,1,.3,1) forwards;transform-origin:bottom;transform:scaleY(0)}
+@keyframes bar-up{to{transform:scaleY(1)}}
+
+/* tabs row */
+.mock-tabs{display:flex;gap:4px;margin-bottom:2px}
+.mock-tab{
+  font-size:10px;padding:4px 10px;border-radius:6px;
+  background:rgba(255,255,255,.04);color:var(--t3);
+}
+.mock-tab.active{background:rgba(235,133,102,.15);color:var(--coral);font-weight:600}
+
+/* ═══════════════════════════════════════════════════════
+   SECTION COMMON
+   ═══════════════════════════════════════════════════════ */
+.sec-label{
+  font-size:12.5px;font-weight:600;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--coral);margin-bottom:14px;
+}
+.sec-title{
+  font-size:clamp(28px,4.5vw,48px);font-weight:750;
+  letter-spacing:-.03em;line-height:1.1;margin-bottom:14px;
+}
+.sec-sub{
+  font-size:clamp(15px,1.8vw,18px);color:var(--t2);
+  max-width:540px;line-height:1.6;
+}
+.sec-centered{text-align:center}
+.sec-centered .sec-sub{margin:0 auto}
+
+/* ═══════════════════════════════════════════════════════
+   FEATURES — 3D FLIP CARDS (drawer/cabinet)
+   ═══════════════════════════════════════════════════════ */
+.features{padding:140px 0;position:relative}
+.features::before{
+  content:'';position:absolute;top:0;left:0;right:0;height:1px;
+  background:linear-gradient(90deg,transparent,rgba(235,133,102,.2),transparent);
+}
+.feat-grid{
+  display:grid;grid-template-columns:repeat(3,1fr);gap:18px;
+  margin-top:64px;perspective:1000px;
+}
+.feat-flip{perspective:800px;height:220px}
+.feat-flip-inner{
+  position:relative;width:100%;height:100%;
+  transition:transform .7s cubic-bezier(.16,1,.3,1);
+  transform-style:preserve-3d;
+}
+.feat-flip:hover .feat-flip-inner{transform:rotateY(180deg)}
+.feat-front,.feat-back{
+  position:absolute;inset:0;
+  backface-visibility:hidden;-webkit-backface-visibility:hidden;
+  border-radius:var(--r);padding:28px;
+  border:1px solid var(--border);
+  display:flex;flex-direction:column;
+}
+.feat-front{
+  background:var(--surface);
+  justify-content:flex-start;
+}
+.feat-back{
+  background:var(--bg2);
+  border-color:var(--border-h);
+  transform:rotateY(180deg);
+  justify-content:center;
+  align-items:center;text-align:center;
+}
+.feat-back p{font-size:14px;color:var(--t2);line-height:1.65;max-width:240px}
+.feat-back .feat-back-label{
+  font-size:11px;font-weight:600;color:var(--coral);
+  text-transform:uppercase;letter-spacing:.08em;margin-bottom:10px;
+}
+
+.feat-icon{
+  width:46px;height:46px;border-radius:12px;
+  display:flex;align-items:center;justify-content:center;
+  font-size:22px;margin-bottom:18px;
+  position:relative;overflow:hidden;
+}
+.feat-icon::after{
+  content:'';position:absolute;inset:0;
+  background:linear-gradient(135deg,rgba(255,255,255,.12),transparent);
+  border-radius:12px;
+}
+.feat-front h3{font-size:16px;font-weight:650;letter-spacing:-.01em;margin-bottom:6px}
+.feat-front .peek{font-size:13px;color:var(--t3);line-height:1.5}
+
+/* edge glow on flip */
+.feat-flip::before{
+  content:'';position:absolute;inset:-1px;border-radius:calc(var(--r) + 1px);
+  background:conic-gradient(from var(--angle),var(--coral),var(--lavender),var(--blue),var(--emerald),var(--coral));
+  opacity:0;transition:opacity .4s;z-index:-1;
+  animation:shimmer-rotate 4s linear infinite;
+}
+.feat-flip:hover::before{opacity:.25}
+
+@media(max-width:900px){.feat-grid{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:560px){.feat-grid{grid-template-columns:1fr}.feat-flip{height:200px}}
+
+/* ═══════════════════════════════════════════════════════
+   TOOLS — 3D TILT CARDS
+   ═══════════════════════════════════════════════════════ */
+.tools{padding:140px 0;background:var(--bg2);position:relative;overflow:hidden}
+.tools::before,.tools::after{
+  content:'';position:absolute;left:0;right:0;height:1px;
+  background:linear-gradient(90deg,transparent,var(--border-h),transparent);
+}
+.tools::before{top:0}.tools::after{bottom:0}
+
+/* fluid accent behind tools */
+.tools-fluid{
+  position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+  width:700px;height:400px;
+  filter:blur(120px);opacity:.2;pointer-events:none;
+  background:radial-gradient(ellipse at 30% 50%,var(--coral),transparent 60%),
+             radial-gradient(ellipse at 70% 50%,var(--lavender),transparent 60%);
+}
+
+.tools-grid{
+  display:grid;grid-template-columns:repeat(4,1fr);gap:14px;
+  margin-top:64px;position:relative;z-index:1;
+}
+.tool-card{
+  text-align:center;padding:28px 16px;
+  background:rgba(255,255,255,.025);
+  border:1px solid var(--border);
+  border-radius:var(--r);
+  transition:all .4s cubic-bezier(.16,1,.3,1);
+  transform-style:preserve-3d;
+  will-change:transform;
+}
+.tool-card:hover{
+  background:rgba(255,255,255,.05);
+  border-color:var(--border-h);
+  box-shadow:0 20px 50px -10px rgba(0,0,0,.5);
+}
+.tool-icon{
+  width:52px;height:52px;border-radius:14px;
+  display:flex;align-items:center;justify-content:center;
+  font-size:19px;font-weight:800;color:#fff;
+  margin:0 auto 14px;position:relative;overflow:hidden;
+}
+.tool-icon::after{
+  content:'';position:absolute;inset:0;
+  background:linear-gradient(135deg,rgba(255,255,255,.2),transparent 60%);
+}
+.tool-card h3{font-size:14.5px;font-weight:650;margin-bottom:4px}
+.tool-card p{font-size:11.5px;color:var(--t3);line-height:1.4}
+@media(max-width:900px){.tools-grid{grid-template-columns:repeat(2,1fr)}}
+
+/* ═══════════════════════════════════════════════════════
+   HOW IT WORKS — TIMELINE
+   ═══════════════════════════════════════════════════════ */
+.how{padding:140px 0;position:relative}
+.how-steps{
+  display:grid;grid-template-columns:repeat(3,1fr);gap:24px;
+  margin-top:64px;position:relative;
+}
+.how-steps::before{
+  content:'';position:absolute;top:36px;left:calc(16.67% + 12px);right:calc(16.67% + 12px);
+  height:2px;
+  background:linear-gradient(90deg,var(--border),rgba(235,133,102,.3),rgba(158,133,235,.3),var(--border));
+  border-radius:1px;
+}
+.step{text-align:center;padding:0 20px;position:relative}
+.step-n{
+  width:44px;height:44px;border-radius:50%;
+  display:inline-flex;align-items:center;justify-content:center;
+  font-size:17px;font-weight:700;color:var(--coral);
+  background:var(--bg);border:2px solid rgba(235,133,102,.3);
+  margin-bottom:20px;position:relative;z-index:1;
+  transition:all .3s;
+}
+.step:hover .step-n{
+  border-color:var(--coral);
+  box-shadow:0 0 24px rgba(235,133,102,.2);
+}
+.step h3{font-size:16px;font-weight:650;margin-bottom:8px}
+.step p{font-size:14px;color:var(--t2);line-height:1.55}
+@media(max-width:768px){
+  .how-steps{grid-template-columns:1fr;gap:32px}
+  .how-steps::before{display:none}
+}
+
+/* ═══════════════════════════════════════════════════════
+   PRIVACY — VAULT CARD
+   ═══════════════════════════════════════════════════════ */
+.privacy{padding:140px 0;background:var(--bg2)}
+.vault{
+  max-width:720px;margin:0 auto;padding:52px 48px;
+  background:rgba(255,255,255,.025);
+  border:1px solid var(--border);
+  border-radius:24px;text-align:center;
+  position:relative;overflow:hidden;
+}
+.vault::before{
+  content:'';position:absolute;inset:-2px;
+  border-radius:26px;
+  background:conic-gradient(from 180deg,var(--emerald),transparent 30%,transparent 70%,var(--coral));
+  opacity:.12;z-index:0;
+}
+.vault>*{position:relative;z-index:1}
+.vault-icon{font-size:44px;margin-bottom:20px;display:block}
+.vault h2{
+  font-size:clamp(22px,3.5vw,34px);font-weight:700;
+  letter-spacing:-.02em;margin-bottom:14px;line-height:1.2;
+}
+.vault p{font-size:clamp(14px,1.5vw,17px);color:var(--t2);max-width:460px;margin:0 auto;line-height:1.6}
+.pills{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-top:28px}
+.pill{
+  padding:7px 16px;font-size:12.5px;font-weight:500;
+  background:rgba(102,209,153,.07);border:1px solid rgba(102,209,153,.14);
+  border-radius:100px;color:var(--emerald);
+}
+
+/* ═══════════════════════════════════════════════════════
+   CTA
+   ═══════════════════════════════════════════════════════ */
+.cta{padding:140px 0;position:relative;overflow:hidden}
+.cta-fluid{
+  position:absolute;bottom:-20%;left:50%;transform:translateX(-50%);
+  width:800px;height:500px;
+  filter:blur(100px);opacity:.18;pointer-events:none;
+  background:radial-gradient(ellipse at 40% 60%,var(--coral),transparent 55%),
+             radial-gradient(ellipse at 60% 40%,var(--lavender),transparent 55%);
+}
+.cta h2{
+  font-size:clamp(32px,5.5vw,60px);font-weight:800;
+  letter-spacing:-.04em;line-height:1.05;margin-bottom:16px;
+}
+.cta .grad{
+  background:linear-gradient(135deg,var(--coral),var(--lavender),var(--blue));
+  background-size:200% 200%;
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;
+  background-clip:text;
+  animation:title-shift 5s ease-in-out infinite;
+}
+.cta .sec-sub{margin:0 auto 44px}
+.cta-req{margin-top:20px;font-size:12.5px;color:var(--t3)}
+.cta-req span{margin:0 8px}
+
+/* ═══════════════════════════════════════════════════════
+   FOOTER
+   ═══════════════════════════════════════════════════════ */
+footer{padding:36px 0;border-top:1px solid var(--border)}
+footer .container{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px}
+.footer-l{font-size:12.5px;color:var(--t3)}
+.footer-r{display:flex;gap:22px}
+.footer-r a{font-size:12.5px;color:var(--t3);transition:color .2s}
+.footer-r a:hover{color:var(--t2)}
+
+/* ── grain ── */
+body::after{
+  content:'';position:fixed;inset:0;z-index:9999;pointer-events:none;
+  background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  opacity:.025;mix-blend-mode:overlay;
+}
+
+/* ── scrollbar ── */
+::-webkit-scrollbar{width:7px}
+::-webkit-scrollbar-track{background:var(--bg)}
+::-webkit-scrollbar-thumb{background:rgba(255,255,255,.08);border-radius:4px}
+::selection{background:rgba(235,133,102,.18);color:var(--t1)}
+
+/* ═══════════════════════════════════════════════════════
+   DIVIDER DIAMOND
+   ═══════════════════════════════════════════════════════ */
+.div-diamond{
+  display:flex;justify-content:center;padding:0;
+  position:relative;
+}
+.div-diamond::before{
+  content:'';width:6px;height:6px;
+  background:var(--coral);
+  transform:rotate(45deg);
+  box-shadow:0 0 12px rgba(235,133,102,.4);
+}
+</style>
+</head>
+<body>
+
+<!-- ═══ NAV ═══ -->
+<nav>
+  <div class="container">
+    <a href="#" class="nav-brand"><span class="nav-logo">時</span>Tokei</a>
+    <div class="nav-right">
+      <div class="nav-links">
+        <a href="#features"><span class="en">Features</span><span class="zh">功能</span></a>
+        <a href="#tools"><span class="en">Tools</span><span class="zh">工具</span></a>
+        <a href="#how"><span class="en">How It Works</span><span class="zh">工作原理</span></a>
+        <a href="#privacy"><span class="en">Privacy</span><span class="zh">隐私</span></a>
+      </div>
+      <button class="lang-btn" onclick="toggleLang()">
+        <span class="en">中文</span><span class="zh">EN</span>
+      </button>
+      <a href="#download" class="nav-cta">
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M8 1v10M4 7l4 4 4-4M2 14h12" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span class="en">Download</span><span class="zh">下载</span>
+      </a>
+    </div>
+  </div>
+</nav>
+
+<!-- ═══ HERO ═══ -->
+<section class="hero" id="hero">
+  <!-- fluid blobs -->
+  <div class="fluid-canvas">
+    <div class="blob b1"></div>
+    <div class="blob b2"></div>
+    <div class="blob b3"></div>
+    <div class="blob b4"></div>
+    <div class="blob b5"></div>
+  </div>
+  <div class="diamond-shimmer"></div>
+
+  <div class="container">
+    <div class="hero-badge rv">
+      <span class="pulse"></span>
+      <span class="en">Open-source &amp; free forever</span>
+      <span class="zh">开源 · 永久免费</span>
+    </div>
+
+    <h1 class="rv rv-d1">
+      <span class="hero-title-glow">Tokei</span>
+      <span class="kanji"> 時計</span>
+    </h1>
+
+    <p class="tagline rv rv-d2">
+      <span class="en">Know your AI. Own your workflow.</span>
+      <span class="zh">了然于心，掌控全局</span>
+    </p>
+
+    <p class="desc rv rv-d3">
+      <span class="en">A macOS menu bar app that tracks usage, cost, and performance across every AI coding tool you use — from one unified dashboard.</span>
+      <span class="zh">一款 macOS 菜单栏应用，在统一面板中追踪你使用的每一个 AI 编程工具的用量、成本与效能。</span>
+    </p>
+
+    <div class="hero-btns rv rv-d4">
+      <a href="#download" class="btn-p">
+        <svg width="15" height="15" viewBox="0 0 16 16" fill="none"><path d="M8 1v10M4 7l4 4 4-4M2 14h12" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span class="en">Download for Mac</span><span class="zh">下载 macOS 版</span>
+      </a>
+      <a href="https://github.com" class="btn-s" target="_blank" rel="noopener">
+        <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        GitHub
+      </a>
+    </div>
+
+    <!-- 3D Mockup -->
+    <div class="hero-mock-wrap rv rv-d5">
+      <div class="hero-mock" id="heroMock">
+        <div class="mock-win">
+          <div class="mock-bar">
+            <div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div>
+            <span>Tokei — <span class="en">Today</span><span class="zh">今日</span></span>
+          </div>
+          <div class="mock-body">
+            <div class="mock-tabs">
+              <div class="mock-tab active"><span class="en">Today</span><span class="zh">今日</span></div>
+              <div class="mock-tab"><span class="en">Week</span><span class="zh">本周</span></div>
+              <div class="mock-tab"><span class="en">Month</span><span class="zh">本月</span></div>
+              <div class="mock-tab"><span class="en">Year</span><span class="zh">本年</span></div>
+            </div>
+            <div class="mock-row">
+              <div class="mc">
+                <div class="mc-l"><span class="en">Total Tokens</span><span class="zh">总 Token</span></div>
+                <div class="mc-v" style="color:var(--coral)">2.4M</div>
+                <div class="mc-s"><span class="en">across 6 tools</span><span class="zh">覆盖 6 个工具</span></div>
+              </div>
+              <div class="mc">
+                <div class="mc-l"><span class="en">Estimated Cost</span><span class="zh">预估成本</span></div>
+                <div class="mc-v" style="color:var(--amber)">$18.72</div>
+                <div class="mc-s"><span class="en">today's spend</span><span class="zh">今日花费</span></div>
+              </div>
+              <div class="mc" style="display:flex;flex-direction:column;align-items:center;justify-content:center">
+                <div class="mc-l" style="align-self:stretch"><span class="en">Cache Hit</span><span class="zh">缓存命中</span></div>
+                <div class="mini-ring">
+                  <svg viewBox="0 0 44 44"><circle class="track" cx="22" cy="22" r="20"/><circle class="fill" cx="22" cy="22" r="20"/></svg>
+                  <span class="val">78%</span>
+                </div>
+              </div>
+            </div>
+            <div class="mock-row">
+              <div class="mc" style="flex:2">
+                <div class="mc-l"><span class="en">Token Usage</span><span class="zh">Token 用量</span></div>
+                <div class="bars">
+                  <div class="bar" style="height:88%;background:var(--coral);animation-delay:.1s"></div>
+                  <div class="bar" style="height:55%;background:var(--blue);animation-delay:.15s"></div>
+                  <div class="bar" style="height:42%;background:var(--lavender);animation-delay:.2s"></div>
+                  <div class="bar" style="height:32%;background:var(--amber);animation-delay:.25s"></div>
+                  <div class="bar" style="height:72%;background:var(--emerald);animation-delay:.3s"></div>
+                  <div class="bar" style="height:22%;background:var(--cyan);animation-delay:.35s"></div>
+                  <div class="bar" style="height:48%;background:var(--coral);opacity:.6;animation-delay:.4s"></div>
+                  <div class="bar" style="height:62%;background:var(--blue);opacity:.6;animation-delay:.45s"></div>
+                  <div class="bar" style="height:38%;background:var(--lavender);opacity:.6;animation-delay:.5s"></div>
+                  <div class="bar" style="height:78%;background:var(--coral);animation-delay:.55s"></div>
+                </div>
+              </div>
+              <div class="mc">
+                <div class="mc-l"><span class="en">Active Model</span><span class="zh">当前模型</span></div>
+                <div class="mc-v" style="font-size:15px;margin-top:3px">opus-4</div>
+                <div class="mc-s" style="color:var(--coral)">Claude Code</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ FEATURES — 3D flip cards ═══ -->
+<section class="features" id="features">
+  <div class="container">
+    <div class="sec-centered rv">
+      <div class="sec-label"><span class="en">Features</span><span class="zh">核心功能</span></div>
+      <h2 class="sec-title">
+        <span class="en">Everything you need,<br>nothing you don't</span>
+        <span class="zh">恰到好处，一目了然</span>
+      </h2>
+      <p class="sec-sub">
+        <span class="en">Built for developers who use multiple AI coding tools daily and want clarity on usage, cost, and efficiency.</span>
+        <span class="zh">专为日常使用多种 AI 编程工具的开发者打造，让用量、成本与效率一览无余。</span>
+      </p>
+    </div>
+
+    <div class="feat-grid">
+      <!-- 1 Token 实时监控 -->
+      <div class="feat-flip rv rv-d1">
+        <div class="feat-flip-inner">
+          <div class="feat-front">
+            <div class="feat-icon" style="background:rgba(235,133,102,.12)">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--coral)" stroke-width="2" stroke-linecap="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+            </div>
+            <h3><span class="en">Token Monitoring</span><span class="zh">Token 实时监控</span></h3>
+            <p class="peek"><span class="en">Input, output, cache read/write — per model, per tool, per day.</span><span class="zh">输入/输出/缓存读写——按模型、工具、日期逐一追踪。</span></p>
+          </div>
+          <div class="feat-back">
+            <div class="feat-back-label"><span class="en">Token Monitoring</span><span class="zh">Token 实时监控</span></div>
+            <p><span class="en">Track input, output, cache read, cache write tokens across 8 tools. Per-model breakdown with quota usage percentage and reset countdown.</span><span class="zh">追踪 8 个工具的输入/输出/缓存读/缓存写 Token。逐模型拆分，配额用量百分比 + 重置倒计时。</span></p>
+          </div>
+        </div>
+      </div>
+
+      <!-- 2 Cache 命中分析 -->
+      <div class="feat-flip rv rv-d2">
+        <div class="feat-flip-inner">
+          <div class="feat-front">
+            <div class="feat-icon" style="background:rgba(107,174,250,.12)">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--blue)" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+            </div>
+            <h3><span class="en">Cache Hit Analytics</span><span class="zh">缓存命中分析</span></h3>
+            <p class="peek"><span class="en">Ring gauge for prompt cache efficiency — optimize your workflow.</span><span class="zh">环形仪表展示提示词缓存效率，优化你的工作流。</span></p>
+          </div>
+          <div class="feat-back">
+            <div class="feat-back-label"><span class="en">Cache Hit Analytics</span><span class="zh">缓存命中分析</span></div>
+            <p><span class="en">Beautiful ring gauges show cache hit rate in real time. Compare efficiency across time ranges and identify workflows that maximize reuse.</span><span class="zh">精美环形仪表实时展示缓存命中率。跨时间维度对比效率，找到最大化复用的工作流。</span></p>
+          </div>
+        </div>
+      </div>
+
+      <!-- 3 成本精算 -->
+      <div class="feat-flip rv rv-d3">
+        <div class="feat-flip-inner">
+          <div class="feat-front">
+            <div class="feat-icon" style="background:rgba(230,191,89,.12)">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--amber)" stroke-width="2" stroke-linecap="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg>
+            </div>
+            <h3><span class="en">Cost Tracking</span><span class="zh">成本精算</span></h3>
+            <p class="peek"><span class="en">Per-model pricing with customizable price tables and overrides.</span><span class="zh">逐模型定价，支持自定义价格表和覆盖配置。</span></p>
+          </div>
+          <div class="feat-back">
+            <div class="feat-back-label"><span class="en">Cost Tracking</span><span class="zh">成本精算</span></div>
+            <p><span class="en">External pricing.json with override support. See cost per tool, per model, per day. One command --update-prices to sync latest API rates.</span><span class="zh">外置 pricing.json 支持覆盖。按工具/模型/日期拆分成本。一条命令 --update-prices 同步最新 API 费率。</span></p>
+          </div>
+        </div>
+      </div>
+
+      <!-- 4 全局 Dashboard -->
+      <div class="feat-flip rv rv-d4">
+        <div class="feat-flip-inner">
+          <div class="feat-front">
+            <div class="feat-icon" style="background:rgba(158,133,235,.12)">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--lavender)" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>
+            </div>
+            <h3><span class="en">Global Dashboard</span><span class="zh">全局数据面板</span></h3>
+            <p class="peek"><span class="en">Daily cost trends, tool distribution charts, session timelines.</span><span class="zh">每日成本趋势、工具分布图表、会话时间线。</span></p>
+          </div>
+          <div class="feat-back">
+            <div class="feat-back-label"><span class="en">Global Dashboard</span><span class="zh">全局数据面板</span></div>
+            <p><span class="en">A unified dashboard with daily cost bar charts, tool usage distribution, and trend lines. See the big picture beyond individual tool cards.</span><span class="zh">统一面板呈现每日成本柱状图、工具用量分布和趋势线。超越单个工具卡片，纵览全局。</span></p>
+          </div>
+        </div>
+      </div>
+
+      <!-- 5 Wrapped 年度回顾 -->
+      <div class="feat-flip rv rv-d5">
+        <div class="feat-flip-inner">
+          <div class="feat-front">
+            <div class="feat-icon" style="background:rgba(102,209,153,.12)">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--emerald)" stroke-width="2" stroke-linecap="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+            </div>
+            <h3><span class="en">Wrapped Review</span><span class="zh">年度 Wrapped</span></h3>
+            <p class="peek"><span class="en">Your AI usage annual report — Spotify Wrapped style.</span><span class="zh">你的年度 AI 使用报告——Spotify Wrapped 风格。</span></p>
+          </div>
+          <div class="feat-back">
+            <div class="feat-back-label"><span class="en">Wrapped Review</span><span class="zh">年度 Wrapped</span></div>
+            <p><span class="en">Total tokens, top tools, busiest days, most-used models, lifetime cost, total sessions — beautifully visualized in your annual report.</span><span class="zh">总 Token 量、Top 工具、最忙碌日、最常用模型、累计成本、总会话数——精美呈现你的年度报告。</span></p>
+          </div>
+        </div>
+      </div>
+
+      <!-- 6 项目足迹 -->
+      <div class="feat-flip rv rv-d6">
+        <div class="feat-flip-inner">
+          <div class="feat-front">
+            <div class="feat-icon" style="background:rgba(217,112,144,.12)">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--rose)" stroke-width="2" stroke-linecap="round"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
+            </div>
+            <h3><span class="en">Project Trail</span><span class="zh">项目足迹</span></h3>
+            <p class="peek"><span class="en">Browse, search, pin, and quick-open all your AI projects.</span><span class="zh">浏览、搜索、置顶，一键打开所有 AI 项目。</span></p>
+          </div>
+          <div class="feat-back">
+            <div class="feat-back-label"><span class="en">Project Trail</span><span class="zh">项目足迹</span></div>
+            <p><span class="en">All projects grouped by recency. Pin favorites, detect local dev ports, one-click open in Terminal, Ghostty, iTerm, VS Code, or Finder.</span><span class="zh">按活跃度分组显示项目。支持置顶、本地端口检测，一键在终端/Ghostty/iTerm/VS Code/Finder 中打开。</span></p>
+          </div>
+        </div>
+      </div>
+
+      <!-- 7 防休眠 -->
+      <div class="feat-flip rv rv-d7">
+        <div class="feat-flip-inner">
+          <div class="feat-front">
+            <div class="feat-icon" style="background:rgba(78,201,176,.12)">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--cyan)" stroke-width="2" stroke-linecap="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+            </div>
+            <h3><span class="en">Keep-awake</span><span class="zh">防休眠模式</span></h3>
+            <p class="peek"><span class="en">Prevent Mac from sleeping during long AI sessions.</span><span class="zh">AI 长会话期间防止 Mac 休眠。</span></p>
+          </div>
+          <div class="feat-back">
+            <div class="feat-back-label"><span class="en">Keep-awake</span><span class="zh">防休眠模式</span></div>
+            <p><span class="en">One-click caffeinate with customizable duration. Smart battery guard auto-disables at low power. Never lose an AI session to sleep again.</span><span class="zh">一键开启防休眠，可自定义时长。智能电量守卫在低电量时自动关闭。再不会因为休眠丢失 AI 会话。</span></p>
+          </div>
+        </div>
+      </div>
+
+      <!-- 8 久坐提醒 -->
+      <div class="feat-flip rv rv-d8">
+        <div class="feat-flip-inner">
+          <div class="feat-front">
+            <div class="feat-icon" style="background:rgba(235,133,102,.12)">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--coral)" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+            </div>
+            <h3><span class="en">Break Reminders</span><span class="zh">久坐提醒</span></h3>
+            <p class="peek"><span class="en">Customizable alerts to stand up and stretch.</span><span class="zh">可自定义间隔的站立和拉伸提醒。</span></p>
+          </div>
+          <div class="feat-back">
+            <div class="feat-back-label"><span class="en">Break Reminders</span><span class="zh">久坐提醒</span></div>
+            <p><span class="en">Set custom intervals for sedentary reminders. Get a gentle macOS notification when it's time to stand, stretch, and rest your eyes.</span><span class="zh">自定义久坐提醒间隔。到时间后收到温和的 macOS 通知，提醒你站起来活动、放松眼睛。</span></p>
+          </div>
+        </div>
+      </div>
+
+      <!-- 9 多设备同步 -->
+      <div class="feat-flip rv rv-d9">
+        <div class="feat-flip-inner">
+          <div class="feat-front">
+            <div class="feat-icon" style="background:rgba(107,174,250,.08)">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--blue)" stroke-width="2" stroke-linecap="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
+            </div>
+            <h3><span class="en">Multi-device Sync</span><span class="zh">多设备同步</span></h3>
+            <p class="peek"><span class="en">Aggregate stats from multiple Macs seamlessly.</span><span class="zh">无缝聚合多台 Mac 的使用数据。</span></p>
+          </div>
+          <div class="feat-back">
+            <div class="feat-back-label"><span class="en">Multi-device Sync</span><span class="zh">多设备同步</span></div>
+            <p><span class="en">Sync usage data across machines via any shared folder (iCloud, Dropbox, NAS). See combined stats no matter which Mac you're working on.</span><span class="zh">通过任意共享文件夹(iCloud/Dropbox/NAS)同步数据。无论在哪台 Mac 工作都能看到汇总统计。</span></p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="div-diamond"></div>
+
+<!-- ═══ TOOLS ═══ -->
+<section class="tools" id="tools">
+  <div class="tools-fluid"></div>
+  <div class="container">
+    <div class="sec-centered rv">
+      <div class="sec-label"><span class="en">Supported Tools</span><span class="zh">支持的工具</span></div>
+      <h2 class="sec-title">
+        <span class="en">8 AI agents.<br>One dashboard.</span>
+        <span class="zh">8 款 AI agent<br>一个面板</span>
+      </h2>
+      <p class="sec-sub">
+        <span class="en">Tokei reads local session logs from each tool. No API keys, no network access.</span>
+        <span class="zh">Tokei 读取每个工具的本地会话日志。无需 API 密钥，无需网络连接。</span>
+      </p>
+    </div>
+
+    <div class="tools-grid" id="toolsGrid">
+      <div class="tool-card rv rv-d1" data-tilt>
+        <div class="tool-icon" style="background:linear-gradient(135deg,var(--coral),#C45A3E)">CC</div>
+        <h3>Claude Code</h3>
+        <p><span class="en">Tokens, cache, cost, models, quota</span><span class="zh">Token · 缓存 · 成本 · 模型 · 配额</span></p>
+      </div>
+      <div class="tool-card rv rv-d2" data-tilt>
+        <div class="tool-icon" style="background:linear-gradient(135deg,var(--blue),#4580CC)">Cx</div>
+        <h3>Codex CLI</h3>
+        <p><span class="en">Token usage, cost, plan limits</span><span class="zh">Token · 成本 · 套餐限额</span></p>
+      </div>
+      <div class="tool-card rv rv-d3" data-tilt>
+        <div class="tool-icon" style="background:linear-gradient(135deg,var(--lavender),#7A5FC9)">Ge</div>
+        <h3>Gemini CLI</h3>
+        <p><span class="en">Tokens, thoughts, cost</span><span class="zh">Token · 思考 · 成本</span></p>
+      </div>
+      <div class="tool-card rv rv-d4" data-tilt>
+        <div class="tool-icon" style="background:linear-gradient(135deg,var(--silver),#888)"><span style="color:#222">Gk</span></div>
+        <h3>Grok</h3>
+        <p><span class="en">Session tracking</span><span class="zh">会话追踪</span></p>
+      </div>
+      <div class="tool-card rv rv-d5" data-tilt>
+        <div class="tool-icon" style="background:linear-gradient(135deg,var(--amber),#C49A30)">Qo</div>
+        <h3>Qoder</h3>
+        <p><span class="en">Calls, duration, context</span><span class="zh">调用 · 时长 · 上下文</span></p>
+      </div>
+      <div class="tool-card rv rv-d6" data-tilt>
+        <div class="tool-icon" style="background:linear-gradient(135deg,var(--emerald),#40A870)">He</div>
+        <h3>Hermes</h3>
+        <p><span class="en">Model stats, cost</span><span class="zh">模型统计 · 成本</span></p>
+      </div>
+      <div class="tool-card rv rv-d7" data-tilt>
+        <div class="tool-icon" style="background:linear-gradient(135deg,var(--cyan),#35A08A)">OC</div>
+        <h3>OpenCode</h3>
+        <p><span class="en">Model stats, cost</span><span class="zh">模型统计 · 成本</span></p>
+      </div>
+      <div class="tool-card rv rv-d8" data-tilt>
+        <div class="tool-icon" style="background:linear-gradient(135deg,var(--rose),#B85878)">OW</div>
+        <h3>OpenClaw</h3>
+        <p><span class="en">Task tracking</span><span class="zh">任务追踪</span></p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ HOW IT WORKS ═══ -->
+<section class="how" id="how">
+  <div class="container">
+    <div class="sec-centered rv">
+      <div class="sec-label"><span class="en">How It Works</span><span class="zh">工作原理</span></div>
+      <h2 class="sec-title">
+        <span class="en">Up and running in 60 seconds</span>
+        <span class="zh">60 秒即刻启动</span>
+      </h2>
+      <p class="sec-sub">
+        <span class="en">No configuration, no API keys, no cloud accounts. Just install and go.</span>
+        <span class="zh">无需配置，无需 API 密钥，无需云账号。安装即用。</span>
+      </p>
+    </div>
+    <div class="how-steps">
+      <div class="step rv rv-d1">
+        <div class="step-n">1</div>
+        <h3><span class="en">Install Tokei</span><span class="zh">安装 Tokei</span></h3>
+        <p><span class="en">Download the DMG, drag to Applications. One file, nothing else.</span><span class="zh">下载 DMG，拖入应用程序。一个文件，仅此而已。</span></p>
+      </div>
+      <div class="step rv rv-d2">
+        <div class="step-n">2</div>
+        <h3><span class="en">It reads local logs</span><span class="zh">读取本地日志</span></h3>
+        <p><span class="en">Tokei scans session logs that your AI tools already write to disk. Zero extra setup.</span><span class="zh">Tokei 扫描 AI 工具已写入磁盘的会话日志。零额外配置。</span></p>
+      </div>
+      <div class="step rv rv-d3">
+        <div class="step-n">3</div>
+        <h3><span class="en">See everything</span><span class="zh">尽在掌握</span></h3>
+        <p><span class="en">Tokens, cost, cache hits, model usage — all in your menu bar, refreshed every 30 seconds.</span><span class="zh">Token、成本、缓存命中、模型用量——全在菜单栏，每 30 秒刷新。</span></p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ PRIVACY ═══ -->
+<section class="privacy" id="privacy">
+  <div class="container">
+    <div class="vault rv">
+      <span class="vault-icon">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--emerald)" stroke-width="1.5" stroke-linecap="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/><circle cx="12" cy="16" r="1"/></svg>
+      </span>
+      <h2>
+        <span class="en">Zero telemetry. Zero network.<br>Your data stays on your Mac.</span>
+        <span class="zh">零遥测 · 零网络<br>数据只留在你的 Mac 上</span>
+      </h2>
+      <p>
+        <span class="en">Tokei reads only local session logs. It never connects to the internet, never sends data anywhere, and never will.</span>
+        <span class="zh">Tokei 仅读取本地会话日志。从不联网，从不上传数据，永远不会。</span>
+      </p>
+      <div class="pills">
+        <span class="pill"><span class="en">No analytics</span><span class="zh">无分析追踪</span></span>
+        <span class="pill"><span class="en">No tracking</span><span class="zh">无行为监控</span></span>
+        <span class="pill"><span class="en">No cloud required</span><span class="zh">无需云端</span></span>
+        <span class="pill"><span class="en">100% offline</span><span class="zh">100% 离线</span></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ CTA ═══ -->
+<section class="cta" id="download">
+  <div class="cta-fluid"></div>
+  <div class="container sec-centered rv">
+    <h2>
+      <span class="en">Start tracking your<br><span class="grad">AI workflow</span> today</span>
+      <span class="zh">今天就开始追踪你的<br><span class="grad">AI 工作流</span></span>
+    </h2>
+    <p class="sec-sub">
+      <span class="en">Free, open-source, and built for developers who care about their tools.</span>
+      <span class="zh">免费、开源，为在意自己工具的开发者而建。</span>
+    </p>
+    <div class="hero-btns" style="margin-top:44px">
+      <a href="https://github.com" class="btn-p" target="_blank" rel="noopener">
+        <svg width="15" height="15" viewBox="0 0 16 16" fill="none"><path d="M8 1v10M4 7l4 4 4-4M2 14h12" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span class="en">Download for macOS</span><span class="zh">下载 macOS 版</span>
+      </a>
+      <a href="https://github.com" class="btn-s" target="_blank" rel="noopener">
+        <span class="en">View source code</span><span class="zh">查看源码</span>
+      </a>
+    </div>
+    <p class="cta-req">macOS 13+ <span>&bull;</span> Python 3.10+ <span>&bull;</span> Apple Silicon / Intel</p>
+  </div>
+</section>
+
+<!-- ═══ FOOTER ═══ -->
+<footer>
+  <div class="container">
+    <div class="footer-l">
+      <span class="en">Built with care by AI-powered developers</span>
+      <span class="zh">由 AI 赋能的开发者用心打造</span>
+    </div>
+    <div class="footer-r">
+      <a href="https://github.com" target="_blank" rel="noopener">GitHub</a>
+      <a href="#features"><span class="en">Features</span><span class="zh">功能</span></a>
+      <a href="#privacy"><span class="en">Privacy</span><span class="zh">隐私</span></a>
+    </div>
+  </div>
+</footer>
+
+<script>
+// ── i18n toggle ──
+function toggleLang(){
+  const h=document.documentElement;
+  h.dataset.lang=h.dataset.lang==='en'?'zh':'en';
+  h.lang=h.dataset.lang;
+}
+
+// ── Reveal on scroll ──
+const obs=new IntersectionObserver(es=>{
+  es.forEach(e=>{if(e.isIntersecting)e.target.classList.add('vis')})
+},{threshold:.06,rootMargin:'0px 0px -30px 0px'});
+document.querySelectorAll('.rv').forEach(el=>obs.observe(el));
+
+// ── 3D tilt on tool cards ──
+document.querySelectorAll('[data-tilt]').forEach(card=>{
+  card.addEventListener('mousemove',e=>{
+    const r=card.getBoundingClientRect();
+    const x=(e.clientX-r.left)/r.width-.5;
+    const y=(e.clientY-r.top)/r.height-.5;
+    card.style.transform=`perspective(600px) rotateY(${x*12}deg) rotateX(${-y*12}deg) scale(1.04)`;
+  });
+  card.addEventListener('mouseleave',()=>{
+    card.style.transform='';
+  });
+});
+
+// ── Parallax hero mockup on mouse ──
+const mock=document.getElementById('heroMock');
+if(mock&&window.innerWidth>768){
+  document.addEventListener('mousemove',e=>{
+    const x=(e.clientX/window.innerWidth-.5)*6;
+    const y=(e.clientY/window.innerHeight-.5)*6;
+    mock.style.transform=`rotateX(${8-y}deg) rotateY(${-2+x}deg)`;
+  });
+}
+</script>
+</body>
+</html>
