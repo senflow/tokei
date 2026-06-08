@@ -65,6 +65,22 @@ if command -v hdiutil &>/dev/null; then
     cp -R "$APP" "$MOUNT_DIR/"
     ln -s /Applications "$MOUNT_DIR/Applications"
 
+    # 安装说明（可复制的 xattr 命令）
+    cat > "$MOUNT_DIR/安装说明.txt" <<'INSTALL'
+Tokei 安装说明
+==============
+
+1. 将 Tokei.app 拖入 Applications 文件夹
+
+2. 首次打开如被 macOS 拦截，请在终端运行:
+
+   sudo xattr -rd com.apple.quarantine /Applications/Tokei.app
+
+3. 重新打开 Tokei.app 即可
+
+更多信息: https://tokei.lanshuagent.com
+INSTALL
+
     # 复制背景图到隐藏目录
     if [ -f "$BG_IMG" ]; then
         mkdir -p "$MOUNT_DIR/.background"
@@ -97,6 +113,7 @@ tell application "Finder"
         set background picture of theViewOptions to file ".background:bg.png"
         set position of item "Tokei.app" of container window to {150, 175}
         set position of item "Applications" of container window to {510, 175}
+        set position of item "安装说明.txt" of container window to {150, 310}
         close
         open
         delay 1

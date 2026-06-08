@@ -7,7 +7,7 @@ W, H = 660, 400
 img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
 draw = ImageDraw.Draw(img)
 
-# Warm light gradient background (top: warm white → bottom: soft peach)
+# Warm light gradient background
 for y in range(H):
     t = y / H
     r = int(245 - t * 12)
@@ -16,7 +16,7 @@ for y in range(H):
     draw.line([(0, y), (W, y)], fill=(r, g, b, 255))
 
 # Soft radial glow behind icon positions
-def draw_glow(img, cx, cy, radius, color, alpha):
+def draw_glow(target, cx, cy, radius, color, alpha):
     layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     ld = ImageDraw.Draw(layer)
     for r in range(radius, 0, -1):
@@ -24,7 +24,7 @@ def draw_glow(img, cx, cy, radius, color, alpha):
         a = int(alpha * (1 - t * t))
         ld.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(*color, a))
     layer = layer.filter(ImageFilter.GaussianBlur(radius // 3))
-    return Image.alpha_composite(img, layer)
+    return Image.alpha_composite(target, layer)
 
 # Glow behind Tokei.app icon (left) and Applications (right)
 icon_y = 190
@@ -59,15 +59,13 @@ def get_mono(size):
                 pass
     return ImageFont.load_default()
 
-# ── Smooth arrow ──
+# ── Arrow ──
 arrow_y = icon_y + 5
 arrow_x1, arrow_x2 = 220, 440
-
-# Coral brand color for arrow
 coral = (235, 120, 90)
 coral_light = (245, 165, 130)
 
-# Soft shadow under arrow
+# Soft shadow
 shadow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
 sd = ImageDraw.Draw(shadow)
 sd.line([(arrow_x1, arrow_y + 3), (arrow_x2, arrow_y + 3)],
@@ -75,10 +73,9 @@ sd.line([(arrow_x1, arrow_y + 3), (arrow_x2, arrow_y + 3)],
 shadow = shadow.filter(ImageFilter.GaussianBlur(6))
 img = Image.alpha_composite(img, shadow)
 
-# Arrow shaft — smooth gradient
+# Gradient arrow shaft
 arrow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
 ad = ImageDraw.Draw(arrow)
-
 steps = 80
 for i in range(steps):
     t = i / steps
@@ -96,7 +93,6 @@ ad.polygon([
     (head_x - 2, arrow_y - 13),
     (head_x - 2, arrow_y + 13),
 ], fill=(*coral, 230))
-# Highlight on arrowhead
 ad.polygon([
     (head_x + 14, arrow_y - 1),
     (head_x + 2, arrow_y - 8),
@@ -119,17 +115,44 @@ tw = bbox[2] - bbox[0]
 draw.text(((W - tw) // 2, arrow_y - 38), txt,
           fill=(120, 100, 90, 200), font=title_font)
 
-# Bottom xattr hint
-label = "首次打开被拦截?  "
-cmd = "sudo xattr -rd com.apple.quarantine /Applications/Tokei.app"
-lbox = draw.textbbox((0, 0), label, font=hint_font)
-cbox = draw.textbbox((0, 0), cmd, font=mono_font)
-lw = lbox[2] - lbox[0]
-cw = cbox[2] - cbox[0]
-total_w = lw + cw
-start_x = (W - total_w) // 2
-draw.text((start_x, H - 30), label, fill=(160, 140, 130, 150), font=hint_font)
-draw.text((start_x + lw, H - 29), cmd, fill=(150, 130, 120, 140), font=mono_font)
+# ── Code box with xattr command (right side, below arrow) ──
+cmd_label = "首次被拦截? 终端运行:"
+cmd_text = "sudo xattr -rd com.apple.quarantine"
+cmd_app = "/Applications/Tokei.app"
+
+box_x = 265
+box_y = arrow_y + 45
+box_w = 370
+box_h = 52
+
+# Code box background (semi-transparent warm gray with subtle border)
+code_bg = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+cd = ImageDraw.Draw(code_bg)
+cd.rounded_rectangle(
+    [box_x, box_y, box_x + box_w, box_y + box_h],
+    radius=6,
+    fill=(60, 55, 50, 22),
+    outline=(180, 160, 140, 50),
+    width=1
+)
+img = Image.alpha_composite(img, code_bg)
+draw = ImageDraw.Draw(img)
+
+# Label
+draw.text((box_x + 10, box_y + 6), cmd_label,
+          fill=(150, 130, 110, 180), font=hint_font)
+# Command (two lines for readability)
+draw.text((box_x + 10, box_y + 22), cmd_text,
+          fill=(200, 120, 80, 200), font=mono_font)
+draw.text((box_x + 10, box_y + 36), cmd_app,
+          fill=(200, 120, 80, 160), font=mono_font)
+
+# "see README" hint
+readme_hint = "详见 安装说明.txt"
+bbox = draw.textbbox((0, 0), readme_hint, font=get_font(9))
+rw = bbox[2] - bbox[0]
+draw.text((box_x + box_w - rw - 8, box_y + box_h - 14), readme_hint,
+          fill=(160, 145, 130, 120), font=get_font(9))
 
 # Top brand
 ver = "Tokei · AI Coding Usage Monitor"

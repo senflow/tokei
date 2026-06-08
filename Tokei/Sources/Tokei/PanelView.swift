@@ -1037,9 +1037,14 @@ struct PanelView: View {
             }
             .frame(width: 30, height: 30)
             VStack(alignment: .leading, spacing: 1) {
-                Text("设置")
-                    .font(.system(size: 15, weight: .bold, design: .rounded))
-                    .foregroundStyle(Theme.tPrimary)
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text("设置")
+                        .font(.system(size: 15, weight: .bold, design: .rounded))
+                        .foregroundStyle(Theme.tPrimary)
+                    Text("v\(Self.buildVersion)")
+                        .font(.system(size: 8, design: .monospaced))
+                        .foregroundStyle(Theme.tTertiary.opacity(0.6))
+                }
                 Text("显示、同步和诊断")
                     .font(.system(size: 9.5))
                     .foregroundStyle(Theme.tTertiary)
@@ -1239,9 +1244,10 @@ struct PanelView: View {
         return lines.joined(separator: "\n")
     }
 
+    static let buildVersion = "2026.0609"
+
     static var skillPath: String {
-        let script = DataLoader.scriptPath
-        return (script as NSString).deletingLastPathComponent + "/skills/tokei-setup.md"
+        return "~/.tokei/skills/tokei-setup.md"
     }
 
     static func gitRemoteUrl(_ dir: String) -> String {

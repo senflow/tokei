@@ -12,7 +12,7 @@
 <p align="center">
   <strong>AI Coding Usage Monitor for macOS</strong><br>
   <sub>了然于心，掌控全局。</sub><br><br>
-  <a href="https://tokei.lanshuagent.com">🌐 Homepage</a> · <a href="https://dl.lanshuagent.com/tokei/Tokei-v2.dmg">⬇️ Download</a>
+  <a href="https://tokei.lanshuagent.com">🌐 Homepage</a> · <a href="https://dl.lanshuagent.com/tokei/Tokei-v4.dmg">⬇️ Download</a>
 </p>
 
 ---
@@ -47,7 +47,7 @@ Tokei is a **macOS menu bar app** that tracks usage, cost, and performance acros
 
 ```bash
 # Download and install
-curl -LO https://dl.lanshuagent.com/tokei/Tokei-v2.dmg
+curl -LO https://dl.lanshuagent.com/tokei/Tokei-v4.dmg
 open Tokei.dmg
 # Drag Tokei.app to Applications, then remove quarantine flag:
 sudo xattr -rd com.apple.quarantine /Applications/Tokei.app
