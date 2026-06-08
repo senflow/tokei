@@ -70,8 +70,20 @@ struct ProjectTrailView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            searchBar
-            if loading {
+            HStack(spacing: 7) {
+                searchBar
+                Button { loadData() } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(Theme.tTertiary)
+                        .frame(width: 24, height: 24)
+                        .background(Circle().fill(Color.primary.opacity(0.06)))
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .tip("刷新")
+            }
+            if loading || cached == nil {
                 HStack { Spacer(); ProgressView().controlSize(.small); Spacer() }
                     .frame(height: 120)
             } else if filtered.isEmpty {

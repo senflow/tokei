@@ -160,7 +160,7 @@ def gemini_price(model: str):
     return _raw_price(model)
 
 
-RANGE_KEYS = ["today", "yesterday", "week", "month", "year"]
+RANGE_KEYS = ["today", "yesterday", "week", "last_week", "month", "year"]
 
 
 def nice_model(m: str) -> str:
@@ -184,9 +184,11 @@ def range_bounds():
     today = now.replace(hour=0, minute=0, second=0, microsecond=0)
     yesterday = today - timedelta(days=1)
     week = today - timedelta(days=today.weekday())   # 周一 0
+    last_week_start = week - timedelta(days=7)       # 上周一
     month = today.replace(day=1)
     year = today.replace(month=1, day=1)
-    return {"today": today, "yesterday": yesterday, "week": week, "month": month, "year": year}
+    return {"today": today, "yesterday": yesterday, "week": week,
+            "last_week": last_week_start, "last_week_end": week, "month": month, "year": year}
 
 
 def classify(dt, b):
@@ -199,6 +201,8 @@ def classify(dt, b):
         ks.append("yesterday")
     if dt >= b["week"]:
         ks.append("week")
+    if b["last_week"] <= dt < b["last_week_end"]:
+        ks.append("last_week")
     if dt >= b["month"]:
         ks.append("month")
     if dt >= b["year"]:
@@ -258,6 +262,8 @@ def scan_claude(bounds, cache):
     today_d = bounds["today"].date()
     yest_d = bounds["yesterday"].date()
     week_d = bounds["week"].date()
+    lw_start_d = bounds["last_week"].date()
+    lw_end_d = bounds["last_week_end"].date()
     month_d = bounds["month"].date()
     year_d = bounds["year"].date()
 
@@ -316,6 +322,7 @@ def scan_claude(bounds, cache):
             if d == today_d: ks.append("today")
             if d == yest_d: ks.append("yesterday")
             if d >= week_d: ks.append("week")
+            if lw_start_d <= d < lw_end_d: ks.append("last_week")
             if d >= month_d: ks.append("month")
             if d >= year_d: ks.append("year")
             if not ks:
@@ -394,6 +401,8 @@ def scan_codex(bounds, cache):
     today_d = bounds["today"].date()
     yest_d = bounds["yesterday"].date()
     week_d = bounds["week"].date()
+    lw_start_d = bounds["last_week"].date()
+    lw_end_d = bounds["last_week_end"].date()
     month_d = bounds["month"].date()
     year_d = bounds["year"].date()
 
@@ -476,6 +485,7 @@ def scan_codex(bounds, cache):
             if d == today_d: ks.append("today")
             if d == yest_d: ks.append("yesterday")
             if d >= week_d: ks.append("week")
+            if lw_start_d <= d < lw_end_d: ks.append("last_week")
             if d >= month_d: ks.append("month")
             if d >= year_d: ks.append("year")
             if not ks:
@@ -679,6 +689,8 @@ def scan_qoder(bounds, cache):
     today_d = bounds["today"].date()
     yest_d = bounds["yesterday"].date()
     week_d = bounds["week"].date()
+    lw_start_d = bounds["last_week"].date()
+    lw_end_d = bounds["last_week_end"].date()
     month_d = bounds["month"].date()
     year_d = bounds["year"].date()
 
@@ -695,6 +707,7 @@ def scan_qoder(bounds, cache):
         if d == today_d: ks.append("today")
         if d == yest_d: ks.append("yesterday")
         if d >= week_d: ks.append("week")
+        if lw_start_d <= d < lw_end_d: ks.append("last_week")
         if d >= month_d: ks.append("month")
         if d >= year_d: ks.append("year")
         for k in ks:

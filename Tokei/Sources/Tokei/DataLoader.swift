@@ -52,6 +52,11 @@ final class DataLoader {
         }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         proc.waitUntilExit()
-        return try? JSONDecoder().decode(Usage.self, from: data)
+        do {
+            return try JSONDecoder().decode(Usage.self, from: data)
+        } catch {
+            fputs("Tokei decode error: \(error)\n", stderr)
+            return nil
+        }
     }
 }
