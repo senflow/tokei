@@ -7,12 +7,6 @@
   <a href="https://github.com/cclank/tokei/releases"><img src="https://img.shields.io/github/v/release/cclank/tokei?style=flat-square&color=blue" alt="Release"></a>
 </p>
 
-<p align="center">
-  <a href="https://star-history.com/#cclank/tokei&Date">
-    <img src="https://api.star-history.com/svg?repos=cclank/tokei&type=Date" width="600" alt="Star History Chart">
-  </a>
-</p>
-
 <h1 align="center">⏱ Tokei 時計</h1>
 
 <p align="center">
@@ -125,6 +119,14 @@ echo '{"sync_dir":"~/.tokei/sync","device_id":"'$(hostname -s)'"}' > ~/.tokei/co
 # Auto-sync every 5 minutes
 (crontab -l 2>/dev/null; echo '*/5 * * * * cd ~/.tokei/sync && python3 ~/.tokei/usage.30s.py --json >/dev/null && git pull -q && git add -A && git diff --cached --quiet || git commit -qm sync && git push -q') | crontab -
 ```
+
+## Star History
+
+<p align="center">
+  <a href="https://star-history.com/#cclank/tokei&Date">
+    <img src="https://api.star-history.com/svg?repos=cclank/tokei&type=Date" width="600" alt="Star History Chart">
+  </a>
+</p>
 
 ## License
 
