@@ -17,6 +17,8 @@ struct PeerDevice: Identifiable {
 final class SyncManager {
     static let configPath = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".tokei/config.json")
+    static let syncDir = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent(".tokei/sync").path
 
     var config: SyncConfig?
 
@@ -41,8 +43,8 @@ final class SyncManager {
     // MARK: - Read peers
 
     func loadPeers() -> [PeerDevice] {
-        guard let cfg = config, !cfg.sync_dir.isEmpty else { return [] }
-        let dir = (cfg.sync_dir as NSString).expandingTildeInPath
+        guard let cfg = config else { return [] }
+        let dir = Self.syncDir
         guard FileManager.default.fileExists(atPath: dir) else { return [] }
         var peers: [PeerDevice] = []
         let fm = FileManager.default
@@ -54,10 +56,8 @@ final class SyncManager {
             guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)) else { continue }
             guard let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let ts = raw["_ts"] as? Int else { continue }
-            // Re-decode without _device/_ts (Usage struct doesn't have them)
             var cleaned = raw
-            cleaned.removeValue(forKey: "_device")
-            cleaned.removeValue(forKey: "_ts")
+            for key in cleaned.keys where key.hasPrefix("_") { cleaned.removeValue(forKey: key) }
             guard let cleanData = try? JSONSerialization.data(withJSONObject: cleaned),
                   let usage = try? JSONDecoder().decode(Usage.self, from: cleanData) else { continue }
             peers.append(PeerDevice(
@@ -79,6 +79,9 @@ final class SyncManager {
             mergeRanges(&u.gemini.ranges, peer.usage.gemini.ranges)
             mergeRanges(&u.grok.ranges, peer.usage.grok.ranges)
             mergeRanges(&u.qoder.ranges, peer.usage.qoder.ranges)
+            mergeRanges(&u.hermes.ranges, peer.usage.hermes.ranges)
+            mergeRanges(&u.openclaw.ranges, peer.usage.openclaw.ranges)
+            mergeRanges(&u.opencode.ranges, peer.usage.opencode.ranges)
         }
         return u
     }
@@ -127,11 +130,39 @@ final class SyncManager {
         }
     }
 
+    private static func mergeRanges(_ dst: inout HermesRanges, _ src: HermesRanges) {
+        for k in RangeKey.allCases {
+            var d = dst.get(k), s = src.get(k)
+            d.in += s.in; d.out += s.out; d.cr += s.cr; d.cw += s.cw
+            d.reason += s.reason; d.cost += s.cost; d.sessions += s.sessions
+            dst.set(k, d)
+        }
+    }
+
+    private static func mergeRanges(_ dst: inout OpenClawRanges, _ src: OpenClawRanges) {
+        for k in RangeKey.allCases {
+            var d = dst.get(k), s = src.get(k)
+            d.tasks += s.tasks; d.completed += s.completed; d.failed += s.failed
+            d.in += s.in; d.out += s.out; d.cr += s.cr; d.cw += s.cw
+            d.cost += s.cost; d.sessions += s.sessions
+            dst.set(k, d)
+        }
+    }
+
+    private static func mergeRanges(_ dst: inout OpenCodeRanges, _ src: OpenCodeRanges) {
+        for k in RangeKey.allCases {
+            var d = dst.get(k), s = src.get(k)
+            d.in += s.in; d.out += s.out; d.cr += s.cr; d.cw += s.cw
+            d.reason += s.reason; d.cost += s.cost; d.sessions += s.sessions
+            dst.set(k, d)
+        }
+    }
+
     // MARK: - Git sync
 
     func gitSync(completion: @escaping (Bool) -> Void) {
-        guard let cfg = config, !cfg.sync_dir.isEmpty else { completion(false); return }
-        let dir = (cfg.sync_dir as NSString).expandingTildeInPath
+        guard let cfg = config else { completion(false); return }
+        let dir = Self.syncDir
         DispatchQueue.global(qos: .utility).async {
             let script = """
             cd "\(dir)" && \

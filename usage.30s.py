@@ -25,6 +25,7 @@ QODER_DIR = os.path.join(HOME, ".qoder")
 HERMES_DB = os.path.join(HOME, ".hermes", "state.db")
 OPENCODE_DIR = os.path.join(HOME, ".local", "share", "opencode", "storage", "message")
 OPENCLAW_DB = os.path.join(HOME, ".openclaw", "tasks", "runs.sqlite")
+OPENCLAW_AGENTS = os.path.join(HOME, ".openclaw", "agents")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 _USER_DIR = os.path.join(HOME, ".tokei")
@@ -291,7 +292,9 @@ def _empty_hermes():
 
 
 def _empty_openclaw():
-    ranges = {k: {"tasks": 0, "completed": 0, "failed": 0} for k in RANGE_KEYS}
+    ranges = {k: {"tasks": 0, "completed": 0, "failed": 0,
+                  "in": 0, "out": 0, "cr": 0, "cw": 0,
+                  "cost": 0.0, "sessions": set(), "models": {}} for k in RANGE_KEYS}
     return {"ranges": ranges}
 
 
@@ -962,62 +965,155 @@ def scan_hermes(bounds, cache):
 
 
 # ---------- OpenClaw ----------
-# SQLite: ~/.openclaw/tasks/runs.sqlite task_runs 表,仅任务记录,无 token。
+# SQLite: ~/.openclaw/tasks/runs.sqlite — 任务计数
+# Session JSONL: ~/.openclaw/agents/*/sessions/*.jsonl — token 用量
 def scan_openclaw(bounds, cache):
     import sqlite3 as _sq
     fc = cache.setdefault("openclaw", {})
-    empty = {k: {"tasks": 0, "completed": 0, "failed": 0} for k in RANGE_KEYS}
-    if not os.path.isfile(OPENCLAW_DB):
-        return {"ranges": empty}
-    try:
-        sig = f"{os.path.getmtime(OPENCLAW_DB)}:{os.path.getsize(OPENCLAW_DB)}"
-    except OSError:
-        return {"ranges": empty}
-    entry = fc.get("db")
-    if not entry or entry.get("sig") != sig:
-        days = {}
-        try:
-            conn = _sq.connect(f"file:{OPENCLAW_DB}?mode=ro", uri=True)
-            for row in conn.execute("""
-                SELECT date(created_at/1000,'unixepoch','localtime') as day,
-                       COUNT(*) as total,
-                       SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END),
-                       SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END)
-                FROM task_runs WHERE created_at > 0
-                GROUP BY day
-            """):
-                dk, total, completed, failed = row
-                if dk:
-                    days[dk] = {"tasks": int(total or 0), "completed": int(completed or 0),
-                                "failed": int(failed or 0)}
-            conn.close()
-        except Exception:
-            pass
-        fc["db"] = {"sig": sig, "days": days}
-        entry = fc["db"]
 
     today_d = bounds["today"].date()
     yest_d = bounds["yesterday"].date()
     week_d = bounds["week"].date()
+    lw_start_d = bounds["last_week"].date()
+    lw_end_d = bounds["last_week_end"].date()
     month_d = bounds["month"].date()
     year_d = bounds["year"].date()
 
-    B = {k: {"tasks": 0, "completed": 0, "failed": 0} for k in RANGE_KEYS}
-    for dk, day in entry.get("days", {}).items():
-        try:
-            d = date.fromisoformat(dk)
-        except ValueError:
-            continue
+    def _day_keys(d):
         ks = []
         if d == today_d: ks.append("today")
         if d == yest_d: ks.append("yesterday")
         if d >= week_d: ks.append("week")
+        if lw_start_d <= d < lw_end_d: ks.append("last_week")
         if d >= month_d: ks.append("month")
         if d >= year_d: ks.append("year")
-        for k in ks:
-            b = B[k]
-            b["tasks"] += day["tasks"]; b["completed"] += day["completed"]
-            b["failed"] += day["failed"]
+        return ks
+
+    B = {k: {"tasks": 0, "completed": 0, "failed": 0,
+             "in": 0, "out": 0, "cr": 0, "cw": 0,
+             "cost": 0.0, "sessions": set(), "models": {}} for k in RANGE_KEYS}
+
+    # --- Part 1: SQLite task counts ---
+    if os.path.isfile(OPENCLAW_DB):
+        try:
+            sig = f"{os.path.getmtime(OPENCLAW_DB)}:{os.path.getsize(OPENCLAW_DB)}"
+        except OSError:
+            sig = None
+        if sig:
+            entry = fc.get("_db")
+            if not entry or entry.get("sig") != sig:
+                task_days = {}
+                try:
+                    conn = _sq.connect(f"file:{OPENCLAW_DB}?mode=ro", uri=True)
+                    for row in conn.execute("""
+                        SELECT date(created_at/1000,'unixepoch','localtime') as day,
+                               COUNT(*) as total,
+                               SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END),
+                               SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END)
+                        FROM task_runs WHERE created_at > 0
+                        GROUP BY day
+                    """):
+                        dk, total, completed, failed = row
+                        if dk:
+                            task_days[dk] = {"tasks": int(total or 0), "completed": int(completed or 0),
+                                             "failed": int(failed or 0)}
+                    conn.close()
+                except Exception:
+                    pass
+                fc["_db"] = {"sig": sig, "days": task_days}
+            for dk, day in fc.get("_db", {}).get("days", {}).items():
+                try:
+                    d = date.fromisoformat(dk)
+                except ValueError:
+                    continue
+                for k in _day_keys(d):
+                    b = B[k]
+                    b["tasks"] += day["tasks"]; b["completed"] += day["completed"]
+                    b["failed"] += day["failed"]
+
+    # --- Part 2: Session JSONL token usage ---
+    if os.path.isdir(OPENCLAW_AGENTS):
+        stale = {k for k in fc if not k.startswith("_")}
+        for f in glob.glob(os.path.join(OPENCLAW_AGENTS, "*", "sessions", "*.jsonl")):
+            if f.endswith(".trajectory.jsonl"):
+                continue
+            stale.discard(f)
+            try:
+                st = os.stat(f)
+            except OSError:
+                continue
+            sig = f"{st.st_mtime}:{st.st_size}"
+            entry = fc.get(f)
+            if not entry or entry.get("sig") != sig:
+                days = {}
+                try:
+                    with open(f, "r", encoding="utf-8", errors="ignore") as fh:
+                        for line in fh:
+                            if '"usage"' not in line:
+                                continue
+                            try:
+                                o = json.loads(line)
+                            except Exception:
+                                continue
+                            msg = o.get("message", {})
+                            if msg.get("role") != "assistant":
+                                continue
+                            u = msg.get("usage")
+                            if not u:
+                                continue
+                            dt = parse_ts(o.get("timestamp", ""))
+                            if dt is None:
+                                continue
+                            dt = dt.astimezone()
+                            inp = u.get("input", 0) or 0
+                            out = u.get("output", 0) or 0
+                            cr = u.get("cacheRead", 0) or 0
+                            cw = u.get("cacheWrite", 0) or 0
+                            if inp == 0 and out == 0:
+                                continue
+                            model = msg.get("model", "")
+                            cid = _resolve_id(model)
+                            cost_obj = u.get("cost")
+                            raw_cost = float((cost_obj or {}).get("total", 0) or 0)
+                            if raw_cost > 0:
+                                cost = raw_cost
+                            elif cid:
+                                p = _raw_price(model)
+                                cost = inp / 1e6 * p["in"] + out / 1e6 * p["out"] + cr / 1e6 * p["cache_read"] + cw / 1e6 * p["cache_write"]
+                            else:
+                                cost = 0.0
+                            dk = dt.date().isoformat()
+                            day = days.setdefault(dk, {"in": 0, "out": 0, "cr": 0, "cw": 0,
+                                                       "cost": 0.0, "models": {}})
+                            day["in"] += inp; day["out"] += out
+                            day["cr"] += cr; day["cw"] += cw; day["cost"] += cost
+                            mn = cid or model or "unknown"
+                            mm = day["models"].setdefault(mn, {"in": 0, "out": 0, "cost": 0.0})
+                            mm["in"] += inp; mm["out"] += out; mm["cost"] += cost
+                except OSError:
+                    continue
+                fc[f] = {"sig": sig, "days": days}
+
+        for p in stale:
+            fc.pop(p, None)
+
+        for f, entry in fc.items():
+            if f.startswith("_"):
+                continue
+            for dk, day in entry.get("days", {}).items():
+                try:
+                    d = date.fromisoformat(dk)
+                except ValueError:
+                    continue
+                for k in _day_keys(d):
+                    b = B[k]
+                    b["sessions"].add(f)
+                    b["in"] += day["in"]; b["out"] += day["out"]
+                    b["cr"] += day["cr"]; b["cw"] += day["cw"]; b["cost"] += day["cost"]
+                    for mn, mv in day["models"].items():
+                        mm = b["models"].setdefault(mn, {"in": 0, "out": 0, "cost": 0.0})
+                        mm["in"] += mv["in"]; mm["out"] += mv["out"]; mm["cost"] += mv["cost"]
+
     return {"ranges": B}
 
 
@@ -1279,7 +1375,13 @@ def compute():
                 "reason": b["reason"], "cost": b["cost"], "sessions": b["sessions"], "models": models}
 
     def openclaw_range(b):
-        return {"tasks": b["tasks"], "completed": b["completed"], "failed": b["failed"]}
+        denom = b["cr"] + b["cw"] + b["in"]
+        hit = (b["cr"] / denom * 100) if denom else 0.0
+        models = [{"name": nice_model(n), "in": v["in"], "out": v["out"], "cost": v["cost"]}
+                  for n, v in sorted(b["models"].items(), key=lambda kv: -kv[1]["cost"])]
+        return {"tasks": b["tasks"], "completed": b["completed"], "failed": b["failed"],
+                "hit": hit, "in": b["in"], "out": b["out"], "cr": b["cr"], "cw": b["cw"],
+                "cost": b["cost"], "sessions": len(b["sessions"]), "models": models}
 
     hranges = {k: hermes_range(hm["ranges"][k]) for k in RANGE_KEYS}
     oranges = {k: openclaw_range(oc["ranges"][k]) for k in RANGE_KEYS}
@@ -1363,8 +1465,10 @@ def main_json():
     cfg = _load_tokei_config()
     if cfg:
         sync_dir = os.path.expanduser(cfg.get("sync_dir", ""))
+        if not sync_dir:
+            sync_dir = os.path.join(HOME, ".tokei", "sync")
         device_id = cfg.get("device_id", "")
-        if sync_dir and device_id and os.path.isdir(sync_dir):
+        if device_id and os.path.isdir(sync_dir):
             import time
             d["_device"] = device_id
             d["_ts"] = int(time.time())

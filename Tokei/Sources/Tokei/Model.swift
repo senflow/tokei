@@ -299,6 +299,29 @@ struct OpenClawRange: Codable {
     var tasks: Int
     var completed: Int
     var failed: Int
+    var hit: Double
+    var `in`: Int
+    var out: Int
+    var cr: Int
+    var cw: Int
+    var cost: Double
+    var sessions: Int
+    var models: [HermesModelStat]
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        tasks = try c.decode(Int.self, forKey: .tasks)
+        completed = try c.decode(Int.self, forKey: .completed)
+        failed = try c.decode(Int.self, forKey: .failed)
+        hit = try c.decodeIfPresent(Double.self, forKey: .hit) ?? 0
+        `in` = try c.decodeIfPresent(Int.self, forKey: .in) ?? 0
+        out = try c.decodeIfPresent(Int.self, forKey: .out) ?? 0
+        cr = try c.decodeIfPresent(Int.self, forKey: .cr) ?? 0
+        cw = try c.decodeIfPresent(Int.self, forKey: .cw) ?? 0
+        cost = try c.decodeIfPresent(Double.self, forKey: .cost) ?? 0
+        sessions = try c.decodeIfPresent(Int.self, forKey: .sessions) ?? 0
+        models = try c.decodeIfPresent([HermesModelStat].self, forKey: .models) ?? []
+    }
 }
 struct OpenClawRanges: Codable {
     var today, yesterday, week, last_week, month, year: OpenClawRange
@@ -307,6 +330,13 @@ struct OpenClawRanges: Codable {
         case .today: return today; case .yesterday: return yesterday
         case .week: return week; case .lastWeek: return last_week
         case .month: return month; case .year: return year
+        }
+    }
+    mutating func set(_ k: RangeKey, _ v: OpenClawRange) {
+        switch k {
+        case .today: today = v; case .yesterday: yesterday = v
+        case .week: week = v; case .lastWeek: last_week = v
+        case .month: month = v; case .year: year = v
         }
     }
 }

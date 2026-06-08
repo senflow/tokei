@@ -1,4 +1,4 @@
-# Tokei Setup — 一键配置多设备用量同步
+# Tokei 多设备数据同步 — 配置指南
 
 交互式引导用户完成 Tokei 多设备同步的全部配置。
 
@@ -6,130 +6,127 @@
 
 用户说 "setup tokei"、"配置 tokei 同步"、"tokei sync setup"、"设置用量同步" 时触发。
 
+## 架构说明
+
+- 每台设备独立运行 `usage.30s.py` 采集本机 AI 用量，生成 `<device_id>.json`
+- 所有设备通过一个 **私有 Git 仓库** (`~/.tokei/sync/`) 同步数据
+- Mac 端 Tokei.app 聚合所有设备数据展示；Linux 端通过 crontab 自动采集+推送
+- 采集脚本从 `https://dl.lanshuagent.com/tokei/usage.30s.py` 下载
+
 ## 执行流程
 
-按以下步骤逐一检查和执行,已完成的步骤跳过:
+按以下步骤逐一检查和执行，已完成的步骤跳过：
 
 ### 步骤 1: 检查环境
 
 ```bash
-# 检查必要工具
-which gh >/dev/null 2>&1 && echo "✅ gh CLI" || echo "❌ gh CLI (brew install gh)"
 which git >/dev/null 2>&1 && echo "✅ git" || echo "❌ git"
 which python3 >/dev/null 2>&1 && echo "✅ python3" || echo "❌ python3"
-[ -f ~/.tokei/config.json ] && echo "✅ Tokei 已配置" || echo "⏳ Tokei 未配置"
+which gh >/dev/null 2>&1 && echo "✅ gh CLI" || echo "⚠️ gh CLI 未安装(可选，手动配置也行)"
+[ -d ~/.tokei/sync/.git ] && echo "✅ 同步仓库已存在" || echo "⏳ 同步仓库未配置"
+[ -f ~/.tokei/config.json ] && echo "✅ 本机配置存在" || echo "⏳ 本机未配置"
+crontab -l 2>/dev/null | grep -q tokei && echo "✅ crontab 已配置" || echo "⏳ crontab 未配置"
 ```
 
-如果缺少 `gh`,提示安装后继续。
+如果缺少 git 或 python3，提示安装后继续。
 
-### 步骤 2: 创建 GitHub 同步仓库
-
-检查是否已有同步仓库:
-
-```bash
-if [ -f ~/.tokei/config.json ]; then
-    SYNC_DIR=$(python3 -c "import json;print(json.load(open('$HOME/.tokei/config.json')).get('sync_dir',''))" 2>/dev/null)
-    if [ -n "$SYNC_DIR" ] && [ -d "$(eval echo $SYNC_DIR)" ]; then
-        echo "✅ 同步仓库已存在: $SYNC_DIR"
-        # 跳到步骤 4
-    fi
-fi
-```
-
-如果不存在,创建:
-
-```bash
-# 创建私有仓库
-gh repo create tokei-sync --private --clone
-cd tokei-sync
-
-# 放入采集脚本和价格文件
-cp /path/to/usage.30s.py .
-cp /path/to/pricing.json . 2>/dev/null
-cp /path/to/pricing_overrides.json . 2>/dev/null
-cp /path/to/install.sh .
-
-# 初始提交
-git add -A && git commit -m "init: tokei sync repo" && git push
-```
-
-**注意**: `/path/to/` 应替换为实际的 Tokei 项目路径。可以通过以下方式找到:
-```bash
-# 常见位置
-ls ~/code/claude-code-research/tools/usage-bar/usage.30s.py 2>/dev/null || \
-ls ~/tokei/usage.30s.py 2>/dev/null || \
-echo "请告诉我 usage.30s.py 的路径"
-```
-
-### 步骤 3: 配置本机
+### 步骤 2: 安装采集脚本
 
 ```bash
 mkdir -p ~/.tokei
-DEVICE_NAME=$(hostname -s)
-SYNC_DIR="$HOME/tokei-sync"  # 步骤 2 克隆的路径
+curl -fsSL https://dl.lanshuagent.com/tokei/usage.30s.py -o ~/.tokei/usage.30s.py
+chmod +x ~/.tokei/usage.30s.py
+echo "✅ 采集脚本已安装"
+```
 
+### 步骤 3: 配置同步仓库
+
+判断当前场景：
+
+**场景 A — 首台设备（需要创建仓库）：**
+
+```bash
+# 有 gh CLI
+gh repo create tokei-sync --private
+git clone $(gh repo view tokei-sync --json sshUrl -q .sshUrl) ~/.tokei/sync
+
+# 没有 gh CLI — 提示用户手动在 GitHub 创建私有仓库 tokei-sync，然后：
+git clone git@github.com:<用户名>/tokei-sync.git ~/.tokei/sync
+```
+
+初始化并推送：
+
+```bash
+cd ~/.tokei/sync
+git add -A && git commit -m "init" && git push -u origin main
+```
+
+**场景 B — 加入已有仓库（其他设备已配好）：**
+
+询问用户仓库地址，然后：
+
+```bash
+git clone <仓库地址> ~/.tokei/sync
+```
+
+### 步骤 4: 写入本机配置
+
+```bash
+DEVICE_NAME=$(hostname -s)
 cat > ~/.tokei/config.json <<EOF
 {
-  "sync_dir": "$SYNC_DIR",
-  "device_id": "$DEVICE_NAME"
+  "device_id": "$DEVICE_NAME",
+  "sync_dir": "~/.tokei/sync",
+  "auto_sync": false,
+  "sync_interval": 5
 }
 EOF
-
-echo "✅ 本机配置完成: $DEVICE_NAME → $SYNC_DIR"
+echo "✅ 本机配置完成: $DEVICE_NAME"
 ```
 
-### 步骤 4: 显示远程部署命令
+### 步骤 5: 配置定时采集（Linux/远程服务器）
 
-读取实际的 git remote URL:
-
-```bash
-REPO_URL=$(git -C "$SYNC_DIR" remote get-url origin 2>/dev/null)
-echo ""
-echo "═══ 远程服务器部署(复制到远程终端执行) ═══"
-echo ""
-echo "  git clone $REPO_URL ~/.tokei/sync && \\"
-echo "  echo '{\"sync_dir\":\"~/.tokei/sync\",\"device_id\":\"'\\$(hostname -s)'\"}' > ~/.tokei/config.json && \\"
-echo "  echo '*/5 * * * * cd ~/.tokei/sync && python3 usage.30s.py --json >/dev/null && git pull -q && git add -A && git diff --cached --quiet || git commit -qm sync && git push -q' | crontab - && \\"
-echo "  echo '✅ 部署完成'"
-echo ""
-```
-
-### 步骤 5: 可选 — 通过 SSH 直接部署
-
-如果用户提供了远程服务器地址:
+Mac 端由 Tokei.app 负责采集，跳过此步。仅 Linux/远程服务器需要：
 
 ```bash
-# 用户提供: ssh user@server
-REMOTE="user@server"
-ssh "$REMOTE" "git clone $REPO_URL ~/.tokei/sync && echo '{\"sync_dir\":\"~/.tokei/sync\",\"device_id\":\"'\$(hostname -s)'\"}' > ~/.tokei/config.json && (crontab -l 2>/dev/null; echo '*/5 * * * * cd ~/.tokei/sync && python3 usage.30s.py --json >/dev/null && git pull -q && git add -A && git diff --cached --quiet || git commit -qm sync && git push -q') | crontab -"
+(crontab -l 2>/dev/null; echo '*/5 * * * * cd ~/.tokei/sync && python3 ~/.tokei/usage.30s.py --json >/dev/null && git pull -q && git add -A && git diff --cached --quiet || git commit -qm sync && git push -q') | crontab -
+echo "✅ crontab 已配置，每 5 分钟自动采集并同步"
 ```
 
 ### 步骤 6: 验证
 
 ```bash
-# 本机立即同步一次
-cd "$SYNC_DIR" && python3 usage.30s.py --json >/dev/null 2>&1
-git add -A && git diff --cached --quiet || git commit -qm "sync $(hostname -s)" && git push -q
+# 立即采集一次
+cd ~/.tokei/sync && python3 ~/.tokei/usage.30s.py --json >/dev/null 2>&1
 
+# 检查生成的数据文件
+DEVICE_NAME=$(cat ~/.tokei/config.json | python3 -c 'import sys,json;print(json.load(sys.stdin)["device_id"])')
+[ -f ~/.tokei/sync/${DEVICE_NAME}.json ] && echo "✅ 数据文件已生成" || echo "❌ 数据文件未找到"
+
+# 推送
+cd ~/.tokei/sync && git add -A && git diff --cached --quiet || git commit -m "sync $DEVICE_NAME" && git push
 echo ""
 echo "═══ 完成 ═══"
-echo "  ✅ 本机: $(cat ~/.tokei/config.json | python3 -c 'import sys,json;print(json.load(sys.stdin)["device_id"])')"
-ls "$SYNC_DIR"/*.json 2>/dev/null | while read f; do
+echo "  本机: $DEVICE_NAME"
+ls ~/.tokei/sync/*.json 2>/dev/null | while read f; do
     name=$(basename "$f" .json)
-    ts=$(python3 -c "import json;print(json.load(open('$f')).get('_ts','?'))" 2>/dev/null)
-    echo "  📱 $name (最后同步: $(date -r $ts '+%m-%d %H:%M' 2>/dev/null || echo '?'))"
+    echo "  📱 $name"
 done
-echo ""
-echo "  Tokei 菜单栏 → 设置 → 多设备同步 → 开启 → 选择目录: $SYNC_DIR"
 ```
+
+### 步骤 7: 提示后续
+
+- **Mac 用户**：Tokei 菜单栏 → 设置 → 多设备同步 → 开启即可
+- **其他设备**：在新设备上重复步骤 1-6，clone 同一个仓库即可加入
 
 ## 交互策略
 
-- 每一步执行前先告诉用户要做什么,得到确认后再执行
+- 每一步执行前先告诉用户要做什么，得到确认后再执行
 - 已完成的步骤直接跳过并显示 ✅
+- 首先判断场景：首台设备 vs 加入已有仓库
+- 判断平台：Mac(跳过 crontab) vs Linux(需要 crontab)
 - 出错时给出具体的修复建议
-- 最后给出清晰的总结: 哪些设备已连接、下一步做什么
 
 ## 回答风格
 
-简洁直接,每步一行结果。不要长段解释。像 CLI 安装向导一样。
+简洁直接，每步一行结果。不要长段解释。像 CLI 安装向导一样。

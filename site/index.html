@@ -91,6 +91,12 @@ a{color:inherit;text-decoration:none}
 @keyframes drift3{0%{transform:translate(0,0) scale(1.1)}100%{transform:translate(40px,-60px) scale(0.9)}}
 @keyframes drift4{0%{transform:translate(0,0) scale(1)}100%{transform:translate(-30px,30px) scale(1.25)}}
 
+/* fire particles canvas */
+.hero-particles{
+  position:absolute;top:0;left:0;width:100%;height:100%;
+  pointer-events:none;z-index:1;
+}
+
 /* diamond shimmer overlay */
 .diamond-shimmer{
   position:absolute;top:-10%;left:50%;transform:translateX(-50%);
@@ -587,6 +593,8 @@ body::after{
 
 <!-- ═══ HERO ═══ -->
 <section class="hero" id="hero">
+  <!-- fire particles -->
+  <canvas class="hero-particles" id="heroParticles"></canvas>
   <!-- fluid blobs -->
   <div class="fluid-canvas">
     <div class="blob b1"></div>
@@ -1053,6 +1061,71 @@ document.querySelectorAll('[data-tilt]').forEach(card=>{
     card.style.transform='';
   });
 });
+
+// ── Fire particles (from wildfire-os hero) ──
+(function(){
+  const canvas=document.getElementById('heroParticles');
+  if(!canvas)return;
+  const ctx=canvas.getContext('2d');
+  let particles=[];
+  let raf;
+
+  const resize=()=>{
+    canvas.width=canvas.offsetWidth*2;
+    canvas.height=canvas.offsetHeight*2;
+    ctx.scale(2,2);
+  };
+  resize();
+  window.addEventListener('resize',()=>{
+    ctx.setTransform(1,0,0,1,0,0);
+    resize();
+  });
+
+  const colors=[
+    [235,133,102],  // coral
+    [158,133,235],  // lavender
+    [107,174,250],  // blue
+    [230,191,89],   // amber
+    [102,209,153],  // emerald
+  ];
+
+  const spawn=()=>{
+    const cx=canvas.offsetWidth/2;
+    const cy=canvas.offsetHeight*0.6;
+    for(let i=0;i<2;i++){
+      const c=colors[Math.floor(Math.random()*colors.length)];
+      particles.push({
+        x:cx+(Math.random()-0.5)*300,
+        y:cy+(Math.random()-0.5)*80,
+        vx:(Math.random()-0.5)*0.5,
+        vy:-0.4-Math.random()*0.9,
+        life:0,
+        maxLife:70+Math.random()*60,
+        size:1.2+Math.random()*2.5,
+        r:c[0],g:c[1],b:c[2],
+      });
+    }
+  };
+
+  const draw=()=>{
+    ctx.clearRect(0,0,canvas.offsetWidth,canvas.offsetHeight);
+    spawn();
+    particles=particles.filter(p=>p.life<p.maxLife);
+    for(const p of particles){
+      p.x+=p.vx;
+      p.y+=p.vy;
+      p.life++;
+      const t=p.life/p.maxLife;
+      const alpha=t<0.2?t/0.2:1-(t-0.2)/0.8;
+      ctx.beginPath();
+      ctx.arc(p.x,p.y,p.size*(1-t*0.4),0,Math.PI*2);
+      ctx.fillStyle=`rgba(${p.r},${p.g},${p.b},${alpha*0.5})`;
+      ctx.fill();
+    }
+    raf=requestAnimationFrame(draw);
+  };
+  draw();
+})();
 
 // ── Parallax hero mockup on mouse ──
 const mock=document.getElementById('heroMock');

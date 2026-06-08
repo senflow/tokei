@@ -76,7 +76,7 @@ struct PanelView: View {
                 let hasGrok   = showGrok   && kr.sessions > 0
                 let hasQoder  = showQoder  && qr.calls > 0
                 let hasHermes = showHermes && hr.sessions > 0
-                let hasClaw   = showOpenClaw && lr.tasks > 0
+                let hasClaw   = showOpenClaw && (lr.tasks > 0 || lr.in + lr.out > 0)
                 let hasOCode  = showOpenCode && or.sessions > 0
                 SegmentedTabs(sel: $sel)
                 if useWide {
@@ -419,8 +419,20 @@ struct PanelView: View {
     @ViewBuilder
     func openclawBlock(_ r: OpenClawRange) -> some View {
         VStack(alignment: .leading, spacing: 11) {
-            cardHeadPlain("OpenClaw", tint: Theme.openclaw)
-            if r.tasks > 0 {
+            cardHead("OpenClaw", tint: Theme.openclaw, sessions: r.sessions)
+            if r.in + r.out > 0 {
+                CostHeadline(value: Fmt.human(r.in + r.out + r.cr + r.cw), caption: "\(sel.label) 总量", tint: Theme.openclaw)
+                metricGrid([.init("dollarsign.circle", "≈成本", String(format: "$%.2f", r.cost))],
+                    hit: r.hit, extra: {
+                    var items: [Metric] = [
+                        .init("arrow.down", "输入", Fmt.human(r.in)),
+                        .init("arrow.up", "输出", Fmt.human(r.out)),
+                        .init("bolt.fill", "缓存读", Fmt.human(r.cr)),
+                    ]
+                    if r.tasks > 0 { items.append(.init("checklist", "任务", "\(r.tasks)")) }
+                    return items
+                }(), tint: Theme.openclaw)
+            } else if r.tasks > 0 {
                 HStack(spacing: 16) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("任务").font(.system(size: 10)).foregroundStyle(Theme.tTertiary)
@@ -711,10 +723,21 @@ struct PanelView: View {
             }
             .padding(.top, 2)
         }
-        .padding(14)
-        .frame(width: mode == .settings ? max(panelWidth, 560) : 260)
-        .background(Theme.bg)
-        .environment(\.colorScheme, .dark)
+        .onAppear {
+            if let cfg = SyncManager.loadConfig() {
+                if syncDir.isEmpty && !cfg.sync_dir.isEmpty {
+                    syncDir = (cfg.sync_dir as NSString).expandingTildeInPath
+                }
+                if deviceName.isEmpty && !cfg.device_id.isEmpty {
+                    deviceName = cfg.device_id
+                }
+                if !store.syncEnabled && !cfg.sync_dir.isEmpty {
+                    store.syncEnabled = true
+                }
+                if let auto = cfg.auto_sync { autoSync = auto }
+                if let interval = cfg.sync_interval { syncInterval = interval }
+            }
+        }
     }
 
     var settingsAgentsSection: some View {

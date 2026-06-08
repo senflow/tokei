@@ -54,7 +54,10 @@ final class DataLoader {
         }
         let data = Data(result.stdout.utf8)
         do {
-            return try JSONDecoder().decode(Usage.self, from: data)
+            guard var raw = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+            for key in raw.keys where key.hasPrefix("_") { raw.removeValue(forKey: key) }
+            let cleaned = try JSONSerialization.data(withJSONObject: raw)
+            return try JSONDecoder().decode(Usage.self, from: cleaned)
         } catch {
             fputs("Tokei decode error: \(error)\n", stderr)
             return nil
