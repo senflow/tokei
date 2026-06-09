@@ -12,7 +12,7 @@
 <p align="center">
   <strong>macOS 菜单栏 AI 编程用量监控</strong><br>
   <sub>了然于心，掌控全局。</sub><br><br>
-  <a href="https://tokei.lanshuagent.com">🌐 官网</a> · <a href="https://dl.lanshuagent.com/tokei/Tokei-v9.dmg">⬇️ 下载</a> · <a href="#english">English</a>
+  <a href="https://tokei.lanshuagent.com">🌐 官网</a> · <a href="https://dl.lanshuagent.com/tokei/Tokei-v10.dmg">⬇️ 下载</a> · <a href="#english">English</a>
 </p>
 
 ---
