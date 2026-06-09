@@ -24,6 +24,21 @@ final class Updater: NSObject, ObservableObject, URLSessionDownloadDelegate {
         URLSession(configuration: .default, delegate: self, delegateQueue: .main)
     }()
 
+    private static func isNewer(remote: String, local: String) -> Bool {
+        let parse: (String) -> [Int] = { v in
+            v.trimmingCharacters(in: CharacterSet(charactersIn: "v"))
+                .split(separator: ".").compactMap { Int($0) }
+        }
+        let r = parse(remote), l = parse(local)
+        for i in 0..<max(r.count, l.count) {
+            let rv = i < r.count ? r[i] : 0
+            let lv = i < l.count ? l[i] : 0
+            if rv > lv { return true }
+            if rv < lv { return false }
+        }
+        return false
+    }
+
     func checkForUpdate() {
         guard state == .idle || {
             if case .failed = state { return true }; return false
@@ -46,7 +61,7 @@ final class Updater: NSObject, ObservableObject, URLSessionDownloadDelegate {
                     self.state = .idle
                     return
                 }
-                if tag != Self.releaseTag {
+                if Self.isNewer(remote: tag, local: Self.releaseTag) {
                     self.state = .available(tag, url)
                 } else {
                     self.state = .idle
@@ -102,9 +117,15 @@ final class Updater: NSObject, ObservableObject, URLSessionDownloadDelegate {
         sleep 1
         hdiutil attach "\(dmgPath)" -nobrowse -quiet -mountpoint /tmp/tokei_mnt
         if [ -d /tmp/tokei_mnt/Tokei.app ]; then
-            rm -rf "\(appPath)"
+            rm -rf "\(appPath).bak"
+            mv "\(appPath)" "\(appPath).bak"
             cp -R /tmp/tokei_mnt/Tokei.app "\(appPath)"
-            xattr -cr "\(appPath)"
+            if [ $? -eq 0 ]; then
+                xattr -cr "\(appPath)"
+                rm -rf "\(appPath).bak"
+            else
+                mv "\(appPath).bak" "\(appPath)"
+            fi
         fi
         hdiutil detach /tmp/tokei_mnt -quiet
         rm -f "\(dmgPath)" /tmp/tokei_update.sh
