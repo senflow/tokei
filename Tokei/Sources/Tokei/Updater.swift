@@ -3,10 +3,10 @@ import AppKit
 
 final class Updater: NSObject, ObservableObject, URLSessionDownloadDelegate {
     enum State: Equatable {
-        case idle, checking, available(String, URL), downloading(Double), installing, failed(String)
+        case idle, checking, upToDate, available(String, URL), downloading(Double), installing, failed(String)
         static func == (lhs: State, rhs: State) -> Bool {
             switch (lhs, rhs) {
-            case (.idle, .idle), (.checking, .checking), (.installing, .installing): return true
+            case (.idle, .idle), (.checking, .checking), (.upToDate, .upToDate), (.installing, .installing): return true
             case (.available(let a, _), .available(let b, _)): return a == b
             case (.downloading(let a), .downloading(let b)): return a == b
             case (.failed(let a), .failed(let b)): return a == b
@@ -42,7 +42,7 @@ final class Updater: NSObject, ObservableObject, URLSessionDownloadDelegate {
     }
 
     func checkForUpdate() {
-        guard state == .idle || {
+        guard state == .idle || state == .upToDate || {
             if case .failed = state { return true }; return false
         }() else { return }
         state = .checking
@@ -66,7 +66,10 @@ final class Updater: NSObject, ObservableObject, URLSessionDownloadDelegate {
                 if Self.isNewer(remote: tag, local: Self.releaseTag) {
                     self.state = .available(tag, url)
                 } else {
-                    self.state = .idle
+                    self.state = .upToDate
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+                        if self?.state == .upToDate { self?.state = .idle }
+                    }
                 }
             }
         }.resume()

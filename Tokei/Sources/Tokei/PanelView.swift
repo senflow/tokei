@@ -1109,8 +1109,22 @@ struct PanelView: View {
                 .font(.system(size: 8))
                 .foregroundStyle(.red)
                 .lineLimit(1)
+        case .upToDate:
+            Text("已是最新")
+                .font(.system(size: 8, weight: .medium))
+                .foregroundStyle(.green)
         case .idle:
-            EmptyView()
+            Button {
+                updater.checkForUpdate()
+            } label: {
+                Text("检查更新")
+                    .font(.system(size: 8, weight: .medium))
+                    .foregroundStyle(Theme.tTertiary)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(Color.primary.opacity(0.06)))
+            }
+            .buttonStyle(.plain)
         }
     }
 
