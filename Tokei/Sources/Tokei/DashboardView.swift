@@ -4,6 +4,7 @@ struct DailyCost: Codable, Identifiable {
     var date: String
     var claude: Double
     var codex: Double
+    var pi: Double = 0
     var total: Double
     var c_in: Int = 0
     var c_out: Int = 0
@@ -13,6 +14,11 @@ struct DailyCost: Codable, Identifiable {
     var x_out: Int = 0
     var x_cached: Int = 0
     var x_reason: Int = 0
+    var p_in: Int = 0
+    var p_out: Int = 0
+    var p_cr: Int = 0
+    var p_cw: Int = 0
+    var p_reason: Int = 0
     var tokens: Int = 0
     var id: String { date }
 }
@@ -25,6 +31,7 @@ struct ModelCost: Codable, Identifiable {
     var out: Int?
     var cr: Int?
     var cw: Int?
+    var reason: Int?
     var tokens: Int?
     var cost_per_k: Double = 0
     var out_ratio: Double = 0
@@ -79,8 +86,16 @@ struct DashboardView: View {
                 StatBar(name: m.name,
                         tokens: m.tokens ?? ((m.in ?? 0) + (m.out ?? 0)),
                         cost: m.cost, maxTokens: maxTokens,
-                        tint: m.tool == "codex" ? Theme.codex : Theme.claude)
+                        tint: modelTint(m.tool))
             }
+        }
+    }
+
+    func modelTint(_ tool: String) -> Color {
+        switch tool {
+        case "codex": return Theme.codex
+        case "pi": return Theme.pi
+        default: return Theme.claude
         }
     }
 
@@ -157,7 +172,7 @@ struct DashboardView: View {
                 }
                 .buttonStyle(.plain)
             }
-            HStack(spacing: 20) {
+            HStack(spacing: 16) {
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 4) {
                         Circle().fill(Theme.claude).frame(width: 6, height: 6)
@@ -176,6 +191,16 @@ struct DashboardView: View {
                     Text("\(Fmt.human(d.x_in + d.x_out + d.x_reason)) tok")
                         .font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.tTertiary)
                     Text(String(format: "$%.2f", d.codex))
+                        .font(.system(size: 12, weight: .semibold, design: .monospaced)).foregroundStyle(Theme.tSecondary)
+                }
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 4) {
+                        Circle().fill(Theme.pi).frame(width: 6, height: 6)
+                        Text("Pi").font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.pi)
+                    }
+                    Text("\(Fmt.human(d.p_in + d.p_out + d.p_cr + d.p_cw + d.p_reason)) tok")
+                        .font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.tTertiary)
+                    Text(String(format: "$%.2f", d.pi))
                         .font(.system(size: 12, weight: .semibold, design: .monospaced)).foregroundStyle(Theme.tSecondary)
                 }
             }
@@ -208,11 +233,6 @@ struct DashboardView: View {
             ForEach(0..<1, id: \.self) { _ in
                 VStack(spacing: 2) {
                     ForEach(0..<7, id: \.self) { i in
-                        let dayOffset = -(6 - i)
-                        let adjustedIdx = ((cal.component(.weekday, from: today) + 5) % 7)
-                        let startOffset = -(adjustedIdx + 6 - i)
-                        let d = cal.date(byAdding: .day, value: dayOffset - (6 - ((cal.component(.weekday, from: today) + 5) % 7)) + i, to: today)!
-                        let _ = 0
                         let realD = cal.date(byAdding: .day, value: -(6 - i), to: today)!
                         let ds = fmt.string(from: realD)
                         let cost = costMap[ds] ?? 0

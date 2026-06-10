@@ -270,11 +270,28 @@ struct HermesRange: Codable {
     var reason: Int
     var cost: Double
     var sessions: Int = 0
-    var models: [HermesModelStat] = []
+    var models: [TokenModelStat] = []
 }
-struct HermesModelStat: Codable, Identifiable {
-    var name: String; var `in`: Int; var out: Int; var cost: Double
+struct TokenModelStat: Codable, Identifiable {
+    var name: String
+    var `in`: Int
+    var out: Int
+    var cr: Int = 0
+    var cw: Int = 0
+    var reason: Int = 0
+    var cost: Double
     var id: String { name }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = try c.decode(String.self, forKey: .name)
+        `in` = try c.decodeIfPresent(Int.self, forKey: .in) ?? 0
+        out = try c.decodeIfPresent(Int.self, forKey: .out) ?? 0
+        cr = try c.decodeIfPresent(Int.self, forKey: .cr) ?? 0
+        cw = try c.decodeIfPresent(Int.self, forKey: .cw) ?? 0
+        reason = try c.decodeIfPresent(Int.self, forKey: .reason) ?? 0
+        cost = try c.decodeIfPresent(Double.self, forKey: .cost) ?? 0
+    }
 }
 struct HermesRanges: Codable {
     var today, yesterday, week, last_week, month, year: HermesRange
@@ -306,7 +323,7 @@ struct OpenClawRange: Codable {
     var cw: Int
     var cost: Double
     var sessions: Int
-    var models: [HermesModelStat]
+    var models: [TokenModelStat]
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -320,7 +337,7 @@ struct OpenClawRange: Codable {
         cw = try c.decodeIfPresent(Int.self, forKey: .cw) ?? 0
         cost = try c.decodeIfPresent(Double.self, forKey: .cost) ?? 0
         sessions = try c.decodeIfPresent(Int.self, forKey: .sessions) ?? 0
-        models = try c.decodeIfPresent([HermesModelStat].self, forKey: .models) ?? []
+        models = try c.decodeIfPresent([TokenModelStat].self, forKey: .models) ?? []
     }
 }
 struct OpenClawRanges: Codable {
@@ -342,7 +359,7 @@ struct OpenClawRanges: Codable {
 }
 struct OpenClawStat: Codable { var ranges: OpenClawRanges }
 
-struct OpenCodeRange: Codable {
+struct TokenUsageRange: Codable {
     var hit: Double
     var `in`: Int
     var out: Int
@@ -351,18 +368,35 @@ struct OpenCodeRange: Codable {
     var reason: Int
     var cost: Double
     var sessions: Int = 0
-    var models: [HermesModelStat] = []
+    var models: [TokenModelStat] = []
+
+    init(hit: Double = 0, `in` input: Int = 0, out: Int = 0, cr: Int = 0, cw: Int = 0,
+         reason: Int = 0, cost: Double = 0, sessions: Int = 0, models: [TokenModelStat] = []) {
+        self.hit = hit
+        self.in = input
+        self.out = out
+        self.cr = cr
+        self.cw = cw
+        self.reason = reason
+        self.cost = cost
+        self.sessions = sessions
+        self.models = models
+    }
 }
-struct OpenCodeRanges: Codable {
-    var today, yesterday, week, last_week, month, year: OpenCodeRange
-    func get(_ k: RangeKey) -> OpenCodeRange {
+struct TokenUsageRanges: Codable {
+    var today, yesterday, week, last_week, month, year: TokenUsageRange
+    static var empty: TokenUsageRanges {
+        let r = TokenUsageRange()
+        return TokenUsageRanges(today: r, yesterday: r, week: r, last_week: r, month: r, year: r)
+    }
+    func get(_ k: RangeKey) -> TokenUsageRange {
         switch k {
         case .today: return today; case .yesterday: return yesterday
         case .week: return week; case .lastWeek: return last_week
         case .month: return month; case .year: return year
         }
     }
-    mutating func set(_ k: RangeKey, _ v: OpenCodeRange) {
+    mutating func set(_ k: RangeKey, _ v: TokenUsageRange) {
         switch k {
         case .today: today = v; case .yesterday: yesterday = v
         case .week: week = v; case .lastWeek: last_week = v
@@ -370,7 +404,7 @@ struct OpenCodeRanges: Codable {
         }
     }
 }
-struct OpenCodeStat: Codable { var ranges: OpenCodeRanges }
+struct TokenUsageStat: Codable { var ranges: TokenUsageRanges }
 
 struct Usage: Codable {
     var claude: ClaudeStat
@@ -380,7 +414,25 @@ struct Usage: Codable {
     var qoder: QoderStat
     var hermes: HermesStat
     var openclaw: OpenClawStat
-    var opencode: OpenCodeStat
+    var pi: TokenUsageStat
+    var opencode: TokenUsageStat
+
+    enum CodingKeys: String, CodingKey {
+        case claude, codex, gemini, grok, qoder, hermes, openclaw, pi, opencode
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        claude = try c.decode(ClaudeStat.self, forKey: .claude)
+        codex = try c.decode(CodexStat.self, forKey: .codex)
+        gemini = try c.decode(GeminiStat.self, forKey: .gemini)
+        grok = try c.decode(GrokStat.self, forKey: .grok)
+        qoder = try c.decode(QoderStat.self, forKey: .qoder)
+        hermes = try c.decode(HermesStat.self, forKey: .hermes)
+        openclaw = try c.decode(OpenClawStat.self, forKey: .openclaw)
+        pi = try c.decodeIfPresent(TokenUsageStat.self, forKey: .pi) ?? TokenUsageStat(ranges: .empty)
+        opencode = try c.decode(TokenUsageStat.self, forKey: .opencode)
+    }
 }
 
 enum Fmt {
