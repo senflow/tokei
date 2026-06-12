@@ -10,6 +10,14 @@ struct PanelView: View {
     @State private var mode: PanelMode = .cards
     @State private var trailProjects: [TrailProject]?
     enum PanelMode { case cards, dashboard, projects, settings }
+    private struct ToolCardItem: Identifiable {
+        let id: String
+        let name: String
+        let visible: Bool
+        let active: Bool
+        let tint: Color
+        let content: AnyView
+    }
     @AppStorage("showClaude") private var showClaude = true
     @AppStorage("showCodex") private var showCodex = true
     @AppStorage("showGemini") private var showGemini = true
@@ -17,10 +25,11 @@ struct PanelView: View {
     @AppStorage("showQoder") private var showQoder = true
     @AppStorage("showHermes") private var showHermes = true
     @AppStorage("showOpenClaw") private var showOpenClaw = true
+    @AppStorage("showPi") private var showPi = true
     @AppStorage("showOpenCode") private var showOpenCode = true
 
     private var visibleCount: Int {
-        [showClaude, showCodex, showGemini, showGrok, showQoder, showHermes, showOpenClaw, showOpenCode].filter { $0 }.count
+        [showClaude, showCodex, showGemini, showGrok, showQoder, showHermes, showOpenClaw, showPi, showOpenCode].filter { $0 }.count
     }
     private var useWide: Bool { visibleCount > 2 }
     private var panelWidth: CGFloat { useWide ? 640 : Theme.panelWidth }
@@ -66,43 +75,10 @@ struct PanelView: View {
             } else if mode == .settings {
                 settingsContent
             } else if let u = store.usage {
-                let cr = u.claude.ranges.get(sel), xr = u.codex.ranges.get(sel)
-                let gr = u.gemini.ranges.get(sel), kr = u.grok.ranges.get(sel)
-                let qr = u.qoder.ranges.get(sel), hr = u.hermes.ranges.get(sel)
-                let lr = u.openclaw.ranges.get(sel), or = u.opencode.ranges.get(sel)
-                let hasClaude = showClaude && cr.sessions > 0
-                let hasCodex  = showCodex  && xr.sessions > 0
-                let hasGemini = showGemini && gr.sessions > 0
-                let hasGrok   = showGrok   && kr.sessions > 0
-                let hasQoder  = showQoder  && qr.calls > 0
-                let hasHermes = showHermes && hr.sessions > 0
-                let hasClaw   = showOpenClaw && (lr.tasks > 0 || lr.in + lr.out > 0)
-                let hasOCode  = showOpenCode && or.sessions > 0
+                let cards = toolCards(for: u)
                 SegmentedTabs(sel: $sel)
-                if useWide {
-                    EqualHeightGrid() {
-                        if hasClaude { Card(tint: Theme.claude) { claudeBlock(u.claude, cr) } }
-                        if hasCodex  { Card(tint: Theme.codex)  { codexBlock(u.codex, xr) } }
-                        if hasGemini { Card(tint: Theme.gemini) { geminiBlock(gr) } }
-                        if hasGrok   { Card(tint: Theme.grok)   { grokBlock(kr, model: u.grok.model) } }
-                        if hasQoder  { Card(tint: Theme.qoder)  { qoderBlock(u.qoder, qr) } }
-                        if hasHermes { Card(tint: Theme.hermes) { hermesBlock(hr) } }
-                        if hasClaw   { Card(tint: Theme.openclaw) { openclawBlock(lr) } }
-                        if hasOCode  { Card(tint: Theme.opencode) { opencodeBlock(or) } }
-                    }
-                } else {
-                    if hasClaude { Card(tint: Theme.claude) { claudeBlock(u.claude, cr) } }
-                    if hasCodex  { Card(tint: Theme.codex)  { codexBlock(u.codex, xr) } }
-                    if hasGemini { Card(tint: Theme.gemini) { geminiBlock(gr) } }
-                    if hasGrok   { Card(tint: Theme.grok)   { grokBlock(kr, model: u.grok.model) } }
-                    if hasQoder  { Card(tint: Theme.qoder)  { qoderBlock(u.qoder, qr) } }
-                    if hasHermes { Card(tint: Theme.hermes) { hermesBlock(hr) } }
-                    if hasClaw   { Card(tint: Theme.openclaw) { openclawBlock(lr) } }
-                    if hasOCode  { Card(tint: Theme.opencode) { opencodeBlock(or) } }
-                }
-                inactiveToolsLine(hasClaude: hasClaude, hasCodex: hasCodex, hasGemini: hasGemini,
-                                  hasGrok: hasGrok, hasQoder: hasQoder, hasHermes: hasHermes,
-                                  hasClaw: hasClaw, hasOCode: hasOCode)
+                toolCardsLayout(cards.filter { $0.visible && $0.active })
+                inactiveToolsLine(cards)
             } else {
                 HStack(spacing: 8) {
                     Spacer()
@@ -205,6 +181,48 @@ struct PanelView: View {
             }
             .buttonStyle(.plain)
             .tip("设置")
+        }
+    }
+
+    private func toolCards(for u: Usage) -> [ToolCardItem] {
+        let cr = u.claude.ranges.get(sel), xr = u.codex.ranges.get(sel)
+        let gr = u.gemini.ranges.get(sel), kr = u.grok.ranges.get(sel)
+        let qr = u.qoder.ranges.get(sel), hr = u.hermes.ranges.get(sel)
+        let lr = u.openclaw.ranges.get(sel), pr = u.pi.ranges.get(sel), or = u.opencode.ranges.get(sel)
+        return [
+            ToolCardItem(id: "claude", name: "Claude", visible: showClaude, active: cr.sessions > 0,
+                         tint: Theme.claude, content: AnyView(claudeBlock(u.claude, cr))),
+            ToolCardItem(id: "codex", name: "Codex", visible: showCodex, active: xr.sessions > 0,
+                         tint: Theme.codex, content: AnyView(codexBlock(u.codex, xr))),
+            ToolCardItem(id: "gemini", name: "Gemini", visible: showGemini, active: gr.sessions > 0,
+                         tint: Theme.gemini, content: AnyView(geminiBlock(gr))),
+            ToolCardItem(id: "grok", name: "Grok", visible: showGrok, active: kr.sessions > 0,
+                         tint: Theme.grok, content: AnyView(grokBlock(kr, model: u.grok.model))),
+            ToolCardItem(id: "qoder", name: "Qoder", visible: showQoder, active: qr.calls > 0,
+                         tint: Theme.qoder, content: AnyView(qoderBlock(u.qoder, qr))),
+            ToolCardItem(id: "hermes", name: "Hermes", visible: showHermes, active: hr.sessions > 0,
+                         tint: Theme.hermes, content: AnyView(hermesBlock(hr))),
+            ToolCardItem(id: "openclaw", name: "OpenClaw", visible: showOpenClaw, active: lr.tasks > 0 || lr.in + lr.out > 0,
+                         tint: Theme.openclaw, content: AnyView(openclawBlock(lr))),
+            ToolCardItem(id: "pi", name: "Pi", visible: showPi, active: pr.sessions > 0,
+                         tint: Theme.pi, content: AnyView(tokenUsageBlock(title: "Pi Coding Agent", pr, tint: Theme.pi))),
+            ToolCardItem(id: "opencode", name: "OpenCode", visible: showOpenCode, active: or.sessions > 0,
+                         tint: Theme.opencode, content: AnyView(tokenUsageBlock(title: "OpenCode", or, tint: Theme.opencode))),
+        ]
+    }
+
+    @ViewBuilder
+    private func toolCardsLayout(_ cards: [ToolCardItem]) -> some View {
+        if useWide {
+            EqualHeightGrid() {
+                ForEach(cards) { item in
+                    Card(tint: item.tint) { item.content }
+                }
+            }
+        } else {
+            ForEach(cards) { item in
+                Card(tint: item.tint) { item.content }
+            }
         }
     }
 
@@ -464,41 +482,35 @@ struct PanelView: View {
         }
     }
 
-    // MARK: - OpenCode 卡片
+    // MARK: - Token usage cards
     @ViewBuilder
-    func opencodeBlock(_ r: OpenCodeRange) -> some View {
+    func tokenUsageBlock(title: String, _ r: TokenUsageRange, tint: Color) -> some View {
         VStack(alignment: .leading, spacing: 11) {
-            cardHead("OpenCode", tint: Theme.opencode, sessions: r.sessions)
+            cardHead(title, tint: tint, sessions: r.sessions)
             if r.sessions > 0 {
-                CostHeadline(value: Fmt.human(r.in + r.out + r.cr + r.cw + r.reason), caption: "\(sel.label) 总量", tint: Theme.opencode)
+                CostHeadline(value: Fmt.human(r.in + r.out + r.cr + r.cw + r.reason), caption: "\(sel.label) 总量", tint: tint)
                 metricGrid([.init("dollarsign.circle", "≈成本", String(format: "$%.2f", r.cost))],
-                    hit: r.hit, extra: {
-                    var items: [Metric] = [
-                        .init("arrow.down", "输入", Fmt.human(r.in)),
-                        .init("arrow.up", "输出", Fmt.human(r.out)),
-                        .init("bolt.fill", "缓存读", Fmt.human(r.cr)),
-                        .init("square.stack.3d.up.fill", "缓存写", Fmt.human(r.cw)),
-                    ]
-                    if r.reason > 0 { items.append(.init("brain", "推理", Fmt.human(r.reason))) }
-                    return items
-                }(), tint: Theme.opencode)
+                    hit: r.hit, extra: tokenUsageMetrics(r), tint: tint)
             } else {
                 emptyHint
             }
         }
     }
 
-    @ViewBuilder
-    func inactiveToolsLine(hasClaude: Bool, hasCodex: Bool, hasGemini: Bool,
-                           hasGrok: Bool, hasQoder: Bool, hasHermes: Bool,
-                           hasClaw: Bool, hasOCode: Bool) -> some View {
-        let names: [(Bool, String)] = [
-            (showClaude && !hasClaude, "Claude"), (showCodex && !hasCodex, "Codex"),
-            (showGemini && !hasGemini, "Gemini"), (showGrok && !hasGrok, "Grok"),
-            (showQoder && !hasQoder, "Qoder"), (showHermes && !hasHermes, "Hermes"),
-            (showOpenClaw && !hasClaw, "OpenClaw"), (showOpenCode && !hasOCode, "OpenCode"),
+    func tokenUsageMetrics(_ r: TokenUsageRange) -> [Metric] {
+        var items: [Metric] = [
+            .init("arrow.down", "输入", Fmt.human(r.in)),
+            .init("arrow.up", "输出", Fmt.human(r.out)),
+            .init("bolt.fill", "缓存读", Fmt.human(r.cr)),
+            .init("square.stack.3d.up.fill", "缓存写", Fmt.human(r.cw)),
         ]
-        let inactive = names.filter(\.0).map(\.1)
+        if r.reason > 0 { items.append(.init("brain", "推理", Fmt.human(r.reason))) }
+        return items
+    }
+
+    @ViewBuilder
+    private func inactiveToolsLine(_ cards: [ToolCardItem]) -> some View {
+        let inactive = cards.filter { $0.visible && !$0.active }.map(\.name)
         if !inactive.isEmpty {
             Text("未检测到本地数据: " + inactive.joined(separator: " · "))
                 .font(.system(size: 9))
@@ -566,7 +578,6 @@ struct PanelView: View {
 
     @ViewBuilder
     func metricGrid(_ top: [Metric], hit: Double = 0, extra: [Metric] = [], tint: Color) -> some View {
-        let all = top + extra
         LazyVGrid(columns: [GridItem(.flexible(), spacing: 10),
                             GridItem(.flexible(), spacing: 10)],
                   alignment: .leading, spacing: 9) {
@@ -757,6 +768,7 @@ struct PanelView: View {
                 settingsRow("Qoder", tint: Theme.qoder, isOn: $showQoder)
                 settingsRow("Hermes", tint: Theme.hermes, isOn: $showHermes)
                 settingsRow("OpenClaw", tint: Theme.openclaw, isOn: $showOpenClaw)
+                settingsRow("Pi", tint: Theme.pi, isOn: $showPi)
                 settingsRow("OpenCode", tint: Theme.opencode, isOn: $showOpenCode)
             }
         }
@@ -1285,7 +1297,7 @@ struct PanelView: View {
 
         if let data = result.stdout.data(using: .utf8),
            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            let tools = ["claude", "codex", "gemini", "grok", "qoder", "hermes", "openclaw", "opencode"]
+            let tools = ["claude", "codex", "gemini", "grok", "qoder", "hermes", "openclaw", "pi", "opencode"]
                 .filter { json[$0] != nil }
                 .joined(separator: ",")
             lines.append("json: ok tools: \(tools)")

@@ -87,6 +87,7 @@ final class SyncManager {
             mergeRanges(&u.qoder.ranges, peer.usage.qoder.ranges)
             mergeRanges(&u.hermes.ranges, peer.usage.hermes.ranges)
             mergeRanges(&u.openclaw.ranges, peer.usage.openclaw.ranges)
+            mergeRanges(&u.pi.ranges, peer.usage.pi.ranges)
             mergeRanges(&u.opencode.ranges, peer.usage.opencode.ranges)
         }
         return u
@@ -155,7 +156,7 @@ final class SyncManager {
         }
     }
 
-    private static func mergeRanges(_ dst: inout OpenCodeRanges, _ src: OpenCodeRanges) {
+    private static func mergeRanges(_ dst: inout TokenUsageRanges, _ src: TokenUsageRanges) {
         for k in RangeKey.allCases {
             var d = dst.get(k), s = src.get(k)
             d.in += s.in; d.out += s.out; d.cr += s.cr; d.cw += s.cw

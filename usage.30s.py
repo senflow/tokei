@@ -2,12 +2,13 @@
 # <bitbar.title>AI Usage Bar</bitbar.title>
 # <bitbar.version>v0.1</bitbar.version>
 # <bitbar.author>local</bitbar.author>
-# <bitbar.desc>Claude Code + Codex 本地 token / 缓存命中 / 花费 / 额度</bitbar.desc>
+# <bitbar.desc>本地 AI coding tools token / 缓存命中 / 花费 / 额度</bitbar.desc>
 # <swiftbar.runInBash>false</swiftbar.runInBash>
 #
 # 数据全部读自本地会话日志,运行/刷新不联网、不改动任何 CLI(仅 --update-prices 显式联网更新价格表):
 #   Claude Code: ~/.claude/projects/<proj>/<session>.jsonl  (assistant 行 message.usage,增量)
 #   Codex:       ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl (token_count 事件,含额度)
+#   Pi:          ~/.pi/agent/sessions/**/*.jsonl (assistant 行 message.usage)
 
 import os
 import sys
@@ -26,6 +27,8 @@ HERMES_DB = os.path.join(HOME, ".hermes", "state.db")
 OPENCODE_DIR = os.path.join(HOME, ".local", "share", "opencode", "storage", "message")
 OPENCLAW_DB = os.path.join(HOME, ".openclaw", "tasks", "runs.sqlite")
 OPENCLAW_AGENTS = os.path.join(HOME, ".openclaw", "agents")
+PI_AGENT_DIR = os.path.expanduser(os.environ.get("PI_CODING_AGENT_DIR", os.path.join(HOME, ".pi", "agent")))
+PI_SESSION_DIR = os.path.expanduser(os.environ.get("PI_CODING_AGENT_SESSION_DIR", os.path.join(PI_AGENT_DIR, "sessions")))
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 _USER_DIR = os.path.join(HOME, ".tokei")
@@ -162,6 +165,7 @@ def gemini_price(model: str):
 
 
 RANGE_KEYS = ["today", "yesterday", "week", "last_week", "month", "year"]
+TOKEN_FIELDS = ("in", "out", "cr", "cw", "reason")
 
 
 def nice_model(m: str) -> str:
@@ -194,19 +198,23 @@ def range_bounds():
 
 def classify(dt, b):
     """给定本地化 dt,返回它命中的区间 key 列表(今日同时属本周/本月/本年)。"""
-    d = dt.date()
+    return classify_date(dt.date(), b)
+
+
+def classify_date(d, b):
+    """给定本地日期,返回它命中的区间 key 列表。"""
     ks = []
     if d == b["today"].date():
         ks.append("today")
     if d == b["yesterday"].date():
         ks.append("yesterday")
-    if dt >= b["week"]:
+    if d >= b["week"].date():
         ks.append("week")
-    if b["last_week"] <= dt < b["last_week_end"]:
+    if b["last_week"].date() <= d < b["last_week_end"].date():
         ks.append("last_week")
-    if dt >= b["month"]:
+    if d >= b["month"].date():
         ks.append("month")
-    if dt >= b["year"]:
+    if d >= b["year"].date():
         ks.append("year")
     return ks
 
@@ -230,7 +238,7 @@ def human(n: float) -> str:
 # ---------- 增量扫描缓存 ----------
 import tempfile as _tempfile
 _SCAN_CACHE_FILE = os.path.join(_tempfile.gettempdir(), "_tokei_scan_cache.json")
-_SCAN_CACHE_VERSION = 4
+_SCAN_CACHE_VERSION = 6
 
 
 def _load_scan_cache():
@@ -298,10 +306,63 @@ def _empty_openclaw():
     return {"ranges": ranges}
 
 
+def _empty_token_bucket():
+    return {"in": 0, "out": 0, "cr": 0, "cw": 0, "reason": 0,
+            "cost": 0.0, "sessions": set(), "models": {}}
+
+
+def _empty_token_day():
+    return {"in": 0, "out": 0, "cr": 0, "cw": 0, "reason": 0,
+            "cost": 0.0, "models": {}}
+
+
+def _empty_token_ranges():
+    return {k: _empty_token_bucket() for k in RANGE_KEYS}
+
+
 def _empty_opencode():
-    ranges = {k: {"in": 0, "out": 0, "cr": 0, "cw": 0, "reason": 0,
-                  "cost": 0.0, "sessions": set(), "models": {}} for k in RANGE_KEYS}
-    return {"ranges": ranges}
+    return {"ranges": _empty_token_ranges()}
+
+
+def _empty_pi():
+    return _empty_opencode()
+
+
+def token_total(day):
+    return sum(day.get(k, 0) for k in TOKEN_FIELDS)
+
+
+def _add_model_usage(models, model, inp=0, out=0, cr=0, cw=0, reason=0, cost=0.0):
+    if not model:
+        return
+    mm = models.setdefault(model, {"in": 0, "out": 0, "cr": 0, "cw": 0, "reason": 0, "cost": 0.0})
+    mm["in"] += int(inp or 0); mm["out"] += int(out or 0)
+    mm["cr"] += int(cr or 0); mm["cw"] += int(cw or 0); mm["reason"] += int(reason or 0)
+    mm["cost"] += float(cost or 0)
+
+
+def _add_token_usage(target, inp=0, out=0, cr=0, cw=0, reason=0, cost=0.0, model=None):
+    target["in"] += int(inp or 0); target["out"] += int(out or 0)
+    target["cr"] += int(cr or 0); target["cw"] += int(cw or 0); target["reason"] += int(reason or 0)
+    target["cost"] += float(cost or 0)
+    _add_model_usage(target.get("models", {}), model, inp, out, cr, cw, reason, cost)
+
+
+def _merge_token_day(bucket, day, session=None):
+    if session is not None:
+        bucket["sessions"].add(session)
+    _add_token_usage(bucket, day.get("in", 0), day.get("out", 0), day.get("cr", 0),
+                     day.get("cw", 0), day.get("reason", 0), day.get("cost", 0))
+    for model, mv in day.get("models", {}).items():
+        _add_model_usage(bucket["models"], model, mv.get("in", 0), mv.get("out", 0),
+                         mv.get("cr", 0), mv.get("cw", 0), mv.get("reason", 0), mv.get("cost", 0))
+
+
+def _format_token_models(models):
+    return [{"name": nice_model(n), "in": v.get("in", 0), "out": v.get("out", 0),
+             "cr": v.get("cr", 0), "cw": v.get("cw", 0), "reason": v.get("reason", 0),
+             "cost": v.get("cost", 0)}
+            for n, v in sorted(models.items(), key=lambda kv: -kv[1].get("cost", 0))]
 
 
 def _safe_scan(name, fn, fallback, errors):
@@ -1123,21 +1184,130 @@ def scan_openclaw(bounds, cache):
     return {"ranges": B}
 
 
+# ---------- Pi Coding Agent CLI ----------
+# JSONL 文件: ~/.pi/agent/sessions/<encoded-cwd>/*.jsonl
+# assistant message 里保存 usage{input,output,cacheRead,cacheWrite,cost}。
+def _pi_session_dirs():
+    dirs = [PI_SESSION_DIR, os.path.join(PI_AGENT_DIR, "sessions"), os.path.join(HOME, ".pi", "agent", "sessions")]
+    out = []
+    for d in dirs:
+        d = os.path.abspath(os.path.expanduser(d))
+        if d not in out:
+            out.append(d)
+    return out
+
+
+def _pi_model_id(msg):
+    model = msg.get("model", "") or ""
+    provider = msg.get("provider", "") or ""
+    if provider and model and "/" not in model:
+        return f"{provider}/{model}"
+    return model or provider or "unknown"
+
+
+def _pi_usage_cost(u, model):
+    cost_obj = u.get("cost") or {}
+    total = float(cost_obj.get("total", 0) or 0)
+    if total > 0:
+        return total
+    parts = sum(float(cost_obj.get(k, 0) or 0) for k in ("input", "output", "cacheRead", "cacheWrite"))
+    if parts > 0:
+        return parts
+    p = _raw_price(model)
+    inp = u.get("input", 0) or 0
+    out = u.get("output", 0) or 0
+    cr = u.get("cacheRead", u.get("cache_read", 0)) or 0
+    cw = u.get("cacheWrite", u.get("cache_write", 0)) or 0
+    return inp / 1e6 * p["in"] + out / 1e6 * p["out"] + cr / 1e6 * p["cache_read"] + cw / 1e6 * p["cache_write"]
+
+
+def scan_pi(bounds, cache):
+    fc = cache.setdefault("pi", {})
+    B = _empty_token_ranges()
+
+    roots = [d for d in _pi_session_dirs() if os.path.isdir(d)]
+    if not roots:
+        return {"ranges": B}
+
+    seen_files = set()
+    for root in roots:
+        seen_files.update(glob.glob(os.path.join(root, "**", "*.jsonl"), recursive=True))
+    stale = set(fc.keys())
+
+    for f in sorted(seen_files):
+        stale.discard(f)
+        try:
+            st = os.stat(f)
+        except OSError:
+            continue
+        sig = f"{st.st_mtime}:{st.st_size}"
+        entry = fc.get(f)
+        if not entry or entry.get("sig") != sig:
+            days = {}
+            proj = None
+            sid = os.path.basename(f)
+            try:
+                with open(f, "r", encoding="utf-8", errors="ignore") as fh:
+                    for line in fh:
+                        if '"usage"' not in line and '"type":"session"' not in line and '"type": "session"' not in line:
+                            continue
+                        try:
+                            o = json.loads(line)
+                        except Exception:
+                            continue
+                        if o.get("type") == "session":
+                            sid = o.get("id") or sid
+                            proj = o.get("cwd") or proj
+                            continue
+                        if o.get("type") != "message":
+                            continue
+                        msg = o.get("message") or {}
+                        if msg.get("role") != "assistant":
+                            continue
+                        u = msg.get("usage") or {}
+                        if not u:
+                            continue
+                        dt = parse_ts(o.get("timestamp") or msg.get("timestamp") or "")
+                        if dt is None:
+                            continue
+                        inp = int(u.get("input", 0) or 0)
+                        out = int(u.get("output", 0) or 0)
+                        cr = int(u.get("cacheRead", u.get("cache_read", 0)) or 0)
+                        cw = int(u.get("cacheWrite", u.get("cache_write", 0)) or 0)
+                        reason = int(u.get("reasoning", u.get("reason", 0)) or 0)
+                        model = _pi_model_id(msg)
+                        cost = _pi_usage_cost(u, model)
+                        if inp + out + cr + cw + reason == 0 and cost <= 0:
+                            continue
+                        dk = dt.astimezone().date().isoformat()
+                        day = days.setdefault(dk, _empty_token_day())
+                        _add_token_usage(day, inp, out, cr, cw, reason, cost, model)
+            except OSError:
+                continue
+            fc[f] = {"sig": sig, "days": days, "proj": proj, "sid": sid}
+
+    for p in stale:
+        fc.pop(p, None)
+
+    for f, entry in fc.items():
+        for dk, day in entry.get("days", {}).items():
+            try:
+                d = date.fromisoformat(dk)
+            except ValueError:
+                continue
+            for k in classify_date(d, bounds):
+                _merge_token_day(B[k], day, entry.get("sid") or f)
+    return {"ranges": B}
+
+
 # ---------- OpenCode ----------
 # JSON 文件: ~/.local/share/opencode/storage/message/<session>/msg_*.json
 # 每条 assistant 消息有 tokens{input,output,reasoning,cache{read,write}} + cost + modelID。
 def scan_opencode(bounds, cache):
     fc = cache.setdefault("opencode", {})
-    B = {k: {"in": 0, "out": 0, "cr": 0, "cw": 0, "reason": 0, "cost": 0.0,
-             "sessions": set(), "models": {}} for k in RANGE_KEYS}
+    B = _empty_token_ranges()
     if not os.path.isdir(OPENCODE_DIR):
         return {"ranges": B}
-
-    today_d = bounds["today"].date()
-    yest_d = bounds["yesterday"].date()
-    week_d = bounds["week"].date()
-    month_d = bounds["month"].date()
-    year_d = bounds["year"].date()
 
     stale = set(fc.keys())
 
@@ -1176,8 +1346,10 @@ def scan_opencode(bounds, cache):
                     "cw": ca.get("write", 0) or 0,
                     "cost": d.get("cost", 0) or 0,
                     "session": d.get("sessionID", ""),
-                    "model": model,
+                    "models": {},
                 }
+                _add_model_usage(day_data["models"], model, day_data["in"], day_data["out"],
+                                 day_data["cr"], day_data["cw"], day_data["reason"], day_data["cost"])
                 fc[f] = {"sig": sig, "day": day_data}
 
             if not day_data:
@@ -1186,23 +1358,8 @@ def scan_opencode(bounds, cache):
                 dd = date.fromisoformat(day_data["date"])
             except ValueError:
                 continue
-            ks = []
-            if dd == today_d: ks.append("today")
-            if dd == yest_d: ks.append("yesterday")
-            if dd >= week_d: ks.append("week")
-            if dd >= month_d: ks.append("month")
-            if dd >= year_d: ks.append("year")
-            for k in ks:
-                b = B[k]
-                b["in"] += day_data["in"]; b["out"] += day_data["out"]
-                b["cr"] += day_data["cr"]; b["cw"] += day_data["cw"]
-                b["reason"] += day_data["reason"]; b["cost"] += day_data["cost"]
-                b["sessions"].add(day_data["session"])
-                mn = day_data["model"]
-                if mn:
-                    mm = b["models"].setdefault(mn, {"in": 0, "out": 0, "cost": 0.0})
-                    mm["in"] += day_data["in"]; mm["out"] += day_data["out"]
-                    mm["cost"] += day_data["cost"]
+            for k in classify_date(dd, bounds):
+                _merge_token_day(B[k], day_data, day_data.get("session"))
 
     for p in stale:
         fc.pop(p, None)
@@ -1312,6 +1469,7 @@ def compute():
     qd = _safe_scan("qoder", lambda: scan_qoder(bounds, cache), _empty_qoder, errors)
     hm = _safe_scan("hermes", lambda: scan_hermes(bounds, cache), _empty_hermes, errors)
     oc = _safe_scan("openclaw", lambda: scan_openclaw(bounds, cache), _empty_openclaw, errors)
+    pi = _safe_scan("pi", lambda: scan_pi(bounds, cache), _empty_pi, errors)
     ocode = _safe_scan("opencode", lambda: scan_opencode(bounds, cache), _empty_opencode, errors)
     _save_scan_cache(cache)
 
@@ -1375,32 +1533,30 @@ def compute():
     def hermes_range(b):
         denom = b["cr"] + b["cw"] + b["in"]
         hit = (b["cr"] / denom * 100) if denom else 0.0
-        models = [{"name": nice_model(n), "in": v["in"], "out": v["out"], "cost": v["cost"]}
-                  for n, v in sorted(b["models"].items(), key=lambda kv: -kv[1]["cost"])]
         return {"hit": hit, "in": b["in"], "out": b["out"], "cr": b["cr"], "cw": b["cw"],
-                "reason": b["reason"], "cost": b["cost"], "sessions": b["sessions"], "models": models}
+                "reason": b["reason"], "cost": b["cost"], "sessions": b["sessions"],
+                "models": _format_token_models(b["models"])}
 
     def openclaw_range(b):
         denom = b["cr"] + b["cw"] + b["in"]
         hit = (b["cr"] / denom * 100) if denom else 0.0
-        models = [{"name": nice_model(n), "in": v["in"], "out": v["out"], "cost": v["cost"]}
-                  for n, v in sorted(b["models"].items(), key=lambda kv: -kv[1]["cost"])]
         return {"tasks": b["tasks"], "completed": b["completed"], "failed": b["failed"],
                 "hit": hit, "in": b["in"], "out": b["out"], "cr": b["cr"], "cw": b["cw"],
-                "cost": b["cost"], "sessions": len(b["sessions"]), "models": models}
+                "cost": b["cost"], "sessions": len(b["sessions"]),
+                "models": _format_token_models(b["models"])}
 
     hranges = {k: hermes_range(hm["ranges"][k]) for k in RANGE_KEYS}
     oranges = {k: openclaw_range(oc["ranges"][k]) for k in RANGE_KEYS}
 
-    def opencode_range(b):
+    def token_usage_range(b):
         denom = b["cr"] + b["cw"] + b["in"]
         hit = (b["cr"] / denom * 100) if denom else 0.0
-        models = [{"name": nice_model(n), "in": v["in"], "out": v["out"], "cost": v["cost"]}
-                  for n, v in sorted(b["models"].items(), key=lambda kv: -kv[1]["cost"])]
         return {"hit": hit, "in": b["in"], "out": b["out"], "cr": b["cr"], "cw": b["cw"],
-                "reason": b["reason"], "cost": b["cost"], "sessions": len(b["sessions"]), "models": models}
+                "reason": b["reason"], "cost": b["cost"], "sessions": len(b["sessions"]),
+                "models": _format_token_models(b["models"])}
 
-    ocranges = {k: opencode_range(ocode["ranges"][k]) for k in RANGE_KEYS}
+    piranges = {k: token_usage_range(pi["ranges"][k]) for k in RANGE_KEYS}
+    ocranges = {k: token_usage_range(ocode["ranges"][k]) for k in RANGE_KEYS}
 
     cur = cc["cur"]
     cur_total = cur["in"] + cur["out"] + cur["cr"] + cur["cw"]
@@ -1449,6 +1605,9 @@ def compute():
         },
         "openclaw": {
             "ranges": oranges,
+        },
+        "pi": {
+            "ranges": piranges,
         },
         "opencode": {
             "ranges": ocranges,
@@ -1566,6 +1725,17 @@ def main():
         print(f"model: {gk['model']} {F}")
     print(f"  (仅上下文 token,非消耗量;成本 —) | font=Menlo size=11")
     print("---")
+    # Pi 块
+    pt = d["pi"]["ranges"]["today"]
+    if pt["sessions"] > 0:
+        print(f"Pi Coding Agent {HEAD}")
+        print(f"命中率   {pt['hit']:5.1f}% {F}")
+        print(f"今日 输入   {human(pt['in']):>6} {F}")
+        print(f"今日 输出   {human(pt['out']):>6} {F}")
+        print(f"今日 缓存读 {human(pt['cr']):>6} {F}")
+        print(f"今日 缓存写 {human(pt['cw']):>6} {F}")
+        print(f"今日 ≈成本  ${pt['cost']:.2f} {F}")
+        print("---")
     print("刷新 | refresh=true")
 
 
@@ -1631,6 +1801,23 @@ def _scan_local_models():
                     models.add(m)
         except Exception:
             pass
+    for root in _pi_session_dirs():
+        if not os.path.isdir(root):
+            continue
+        for f in glob.glob(os.path.join(root, "**", "*.jsonl"), recursive=True):
+            try:
+                for line in open(f, encoding="utf-8", errors="ignore"):
+                    if '"usage"' not in line:
+                        continue
+                    try:
+                        o = json.loads(line)
+                        msg = o.get("message") or {}
+                        if msg.get("role") == "assistant":
+                            models.add(_pi_model_id(msg))
+                    except Exception:
+                        pass
+            except OSError:
+                pass
     return models
 
 
@@ -1739,9 +1926,10 @@ def daily_costs():
     days = {}
     models = {}
 
-    _empty = lambda: {"claude": 0.0, "codex": 0.0,
+    _empty = lambda: {"claude": 0.0, "codex": 0.0, "pi": 0.0,
                        "c_in": 0, "c_out": 0, "c_cr": 0, "c_cw": 0,
                        "x_in": 0, "x_out": 0, "x_cached": 0, "x_reason": 0,
+                       "p_in": 0, "p_out": 0, "p_cr": 0, "p_cw": 0, "p_reason": 0,
                        "tokens": 0, "sessions": 0}
 
     for fp, entry in cache.get("claude", {}).items():
@@ -1768,10 +1956,25 @@ def daily_costs():
             # Codex 的 in 已含 cached,总量 = in + out + reason(不重复加 cached)
             d["tokens"] += day.get("in", 0) + day.get("out", 0) + day.get("reason", 0)
 
+    for fp, entry in cache.get("pi", {}).items():
+        for dk, day in entry.get("days", {}).items():
+            d = days.setdefault(dk, _empty())
+            d["pi"] += day.get("cost", 0)
+            d["p_in"] += day.get("in", 0); d["p_out"] += day.get("out", 0)
+            d["p_cr"] += day.get("cr", 0); d["p_cw"] += day.get("cw", 0)
+            d["p_reason"] += day.get("reason", 0)
+            d["tokens"] += token_total(day)
+            for mn, mv in day.get("models", {}).items():
+                nm = f"{nice_model(mn)} (Pi)"
+                m = models.setdefault(nm, {"cost": 0.0, "in": 0, "out": 0, "cr": 0, "cw": 0, "reason": 0, "tool": "pi"})
+                m["cost"] += mv.get("cost", 0)
+                for key in TOKEN_FIELDS:
+                    m[key] += mv.get(key, 0)
+
     for fp, entry in cache.get("hermes", {}).items():
         for dk, day in entry.get("days", {}).items():
             d = days.setdefault(dk, _empty())
-            d["tokens"] += day.get("in", 0) + day.get("out", 0) + day.get("cr", 0) + day.get("cw", 0) + day.get("reason", 0)
+            d["tokens"] += token_total(day)
 
     for fp, entry in cache.get("qoder", {}).items():
         for dk, day in entry.get("days", {}).items():
@@ -1786,10 +1989,11 @@ def daily_costs():
         models["GPT-5.5 (Codex)"] = {"cost": round(codex_total, 2), "in": codex_in, "out": codex_out,
                                       "reason": codex_reason, "tool": "codex"}
 
-    daily = [{"date": dk, "claude": round(v["claude"], 2), "codex": round(v["codex"], 2),
-              "total": round(v["claude"] + v["codex"], 2),
+    daily = [{"date": dk, "claude": round(v["claude"], 2), "codex": round(v["codex"], 2), "pi": round(v["pi"], 2),
+              "total": round(v["claude"] + v["codex"] + v["pi"], 2),
               "c_in": v["c_in"], "c_out": v["c_out"], "c_cr": v["c_cr"], "c_cw": v["c_cw"],
               "x_in": v["x_in"], "x_out": v["x_out"], "x_cached": v["x_cached"], "x_reason": v["x_reason"],
+              "p_in": v["p_in"], "p_out": v["p_out"], "p_cr": v["p_cr"], "p_cw": v["p_cw"], "p_reason": v["p_reason"],
               "tokens": v["tokens"]}
              for dk, v in sorted(days.items())]
     model_list = []
@@ -1799,13 +2003,13 @@ def daily_costs():
         if v.get("tool") == "codex":
             total_tok = v["in"] + v["out"] + v.get("reason", 0)   # in 已含 cached
         else:
-            total_tok = v["in"] + v["out"] + v.get("cr", 0) + v.get("cw", 0)
+            total_tok = v["in"] + v["out"] + v.get("cr", 0) + v.get("cw", 0) + v.get("reason", 0)
         out_k = v["out"] / 1000 if v["out"] else 0
         cost_per_k = round(v["cost"] / out_k, 3) if out_k > 0 else 0
         out_ratio = round(v["out"] / total_tok * 100, 1) if total_tok > 0 else 0
         model_list.append({"name": n, "cost": round(v["cost"], 2),
                            "in": v["in"], "out": v["out"], "cr": v.get("cr", 0), "cw": v.get("cw", 0),
-                           "tokens": total_tok, "tool": v["tool"],
+                           "reason": v.get("reason", 0), "tokens": total_tok, "tool": v["tool"],
                            "cost_per_k": cost_per_k, "out_ratio": out_ratio})
 
     print(json.dumps({"daily": daily, "models": model_list}, ensure_ascii=False))
@@ -1860,7 +2064,7 @@ def wrapped():
         proj_path = entry.get("proj") or ""
         proj = os.path.basename(proj_path.rstrip("/")) or "?"
         for dk, day in entry.get("days", {}).items():
-            tok = day["in"] + day["out"] + day["cr"] + day["cw"]
+            tok = token_total(day)
             day_tokens[dk] = day_tokens.get(dk, 0) + tok
             total_tokens += tok
             total_cost += day.get("cost", 0)
@@ -1870,7 +2074,7 @@ def wrapped():
             weekday[date.fromisoformat(dk).weekday()] += tok
             for mn, mv in day.get("models", {}).items():
                 nm = nice_model(mn)
-                model_tok[nm] = model_tok.get(nm, 0) + mv["in"] + mv["out"] + mv["cr"] + mv["cw"]
+                model_tok[nm] = model_tok.get(nm, 0) + token_total(mv)
 
     # --- Codex (in + cached + out + reason) ---
     for f, entry in cache.get("codex", {}).items():
@@ -1888,7 +2092,7 @@ def wrapped():
         if not isinstance(entry, dict):
             continue
         for dk, day in entry.get("days", {}).items():
-            tok = day.get("in", 0) + day.get("out", 0) + day.get("cr", 0) + day.get("cw", 0) + day.get("reason", 0)
+            tok = token_total(day)
             day_tokens[dk] = day_tokens.get(dk, 0) + tok
             total_tokens += tok
             total_cost += day.get("cost", 0)
@@ -1899,7 +2103,7 @@ def wrapped():
         if not isinstance(entry, dict):
             continue
         for dk, day in entry.get("days", {}).items():
-            tok = day.get("in", 0) + day.get("out", 0) + day.get("cr", 0) + day.get("cw", 0)
+            tok = token_total(day)
             day_tokens[dk] = day_tokens.get(dk, 0) + tok
             total_tokens += tok
             total_cost += day.get("cost", 0)
@@ -1910,11 +2114,25 @@ def wrapped():
         if not isinstance(entry, dict):
             continue
         for dk, day in entry.get("days", {}).items():
-            tok = day.get("in", 0) + day.get("out", 0) + day.get("cr", 0) + day.get("cw", 0) + day.get("reason", 0)
+            tok = token_total(day)
             day_tokens[dk] = day_tokens.get(dk, 0) + tok
             total_tokens += tok
             total_cost += day.get("cost", 0)
             weekday[date.fromisoformat(dk).weekday()] += tok
+
+    # --- Pi Coding Agent (in + out + cr + cw + reason) ---
+    for f, entry in cache.get("pi", {}).items():
+        if not isinstance(entry, dict):
+            continue
+        for dk, day in entry.get("days", {}).items():
+            tok = token_total(day)
+            day_tokens[dk] = day_tokens.get(dk, 0) + tok
+            total_tokens += tok
+            total_cost += day.get("cost", 0)
+            weekday[date.fromisoformat(dk).weekday()] += tok
+            for mn, mv in day.get("models", {}).items():
+                nm = f"{nice_model(mn)} (Pi)"
+                model_tok[nm] = model_tok.get(nm, 0) + token_total(mv)
 
     # --- Qoder (in + out, no cost) ---
     for f, entry in cache.get("qoder", {}).items():
@@ -2059,14 +2277,35 @@ def projects():
         p["sessions"] += 1
         p["tools"].add("claude")
         for dk, day in entry.get("days", {}).items():
-            tok = day["in"] + day["out"] + day["cr"] + day["cw"]
+            tok = token_total(day)
             p["tokens"] += tok
             p["cost"] += day.get("cost", 0)
             if dk > p["last_active"]:
                 p["last_active"] = dk
             for mn, mv in day.get("models", {}).items():
                 nm = nice_model(mn)
-                p["model_tok"][nm] = p["model_tok"].get(nm, 0) + mv["in"] + mv["out"] + mv["cr"] + mv["cw"]
+                p["model_tok"][nm] = p["model_tok"].get(nm, 0) + token_total(mv)
+
+    # Pi sessions
+    for f, entry in cache.get("pi", {}).items():
+        if not isinstance(entry, dict):
+            continue
+        proj_path = entry.get("proj") or ""
+        if not proj_path or proj_path == "?":
+            continue
+        p = proj_map.setdefault(proj_path, {"sessions": 0, "tokens": 0, "cost": 0.0,
+                                             "last_active": "", "model_tok": {}, "tools": set()})
+        p["sessions"] += 1
+        p["tools"].add("pi")
+        for dk, day in entry.get("days", {}).items():
+            tok = token_total(day)
+            p["tokens"] += tok
+            p["cost"] += day.get("cost", 0)
+            if dk > p["last_active"]:
+                p["last_active"] = dk
+            for mn, mv in day.get("models", {}).items():
+                nm = f"{nice_model(mn)} (Pi)"
+                p["model_tok"][nm] = p["model_tok"].get(nm, 0) + token_total(mv)
 
     # Grok sessions (cwd encoded in directory name)
     from urllib.parse import unquote

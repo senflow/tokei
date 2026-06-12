@@ -37,6 +37,8 @@ curl -sL https://raw.githubusercontent.com/<user>/tokei-sync/main/install.sh | b
 - Qoder / QoderWork
 - Hermes (`~/.hermes/`)
 - OpenClaw (`~/.openclaw/`)
+- Pi Coding Agent CLI (`~/.pi/agent/sessions/`)
+- OpenCode (`~/.local/share/opencode/`)
 
 ## 卸载
 

@@ -19,7 +19,7 @@
 
 ## 什么是 Tokei？
 
-Tokei 是一款 **macOS 菜单栏应用**，实时追踪你在 **8 款 AI 编程工具** 上的用量、成本和性能——全部基于本地日志，零网络流量。
+Tokei 是一款 **macOS 菜单栏应用**，实时追踪你在 **9 款 AI 编程工具** 上的用量、成本和性能——全部基于本地日志，零网络流量。
 
 ### 支持的工具
 
@@ -29,8 +29,9 @@ Tokei 是一款 **macOS 菜单栏应用**，实时追踪你在 **8 款 AI 编程
 | **Codex CLI** | Token、成本、配额、会话 |
 | **Gemini CLI** | Token、思考量、成本、模型 |
 | **Grok CLI** | Token、会话、上下文 |
-| **Aider (Hermes)** | Token、成本、缓存命中率、模型 |
+| **Hermes** | Token、成本、缓存命中率、模型 |
 | **OpenClaw** | Token、成本、任务、模型 |
+| **Pi Coding Agent CLI** | Token、成本、缓存命中率、模型、项目 |
 | **OpenCode** | Token、成本、缓存命中率、模型 |
 | **Qoder** | Token、调用次数、配额 |
 
@@ -56,7 +57,7 @@ Tokei 是一款 **macOS 菜单栏应用**，实时追踪你在 **8 款 AI 编程
 - 随时切换，对比不同时段用量趋势
 
 ### 项目追踪
-- 按项目维度查看 Claude Code 用量
+- 按项目维度查看 Claude Code / Pi / Grok 用量
 - 了解每个项目消耗了多少 Token 和成本
 
 ### 多设备同步
@@ -121,8 +122,9 @@ echo '{"sync_dir":"~/.tokei/sync","device_id":"'$(hostname -s)'"}' > ~/.tokei/co
 | Codex CLI | `~/.codex/sessions/YYYY/MM/DD/*.jsonl` |
 | Gemini CLI | `~/.gemini/gemini-cli/conversations/*.json` |
 | Grok CLI | `~/.grok/sessions/YYYY/MM/DD/*.jsonl` |
-| Aider | `~/.aider/analytics/analytics.jsonl` |
+| Hermes | `~/.hermes/state.db` |
 | OpenClaw | `~/.openclaw/agents/*/sessions/*.jsonl` + SQLite |
+| Pi Coding Agent CLI | `~/.pi/agent/sessions/<project>/*.jsonl` |
 | OpenCode | `~/.opencode/sessions/*.json` |
 | Qoder | `~/.qodo-ai/sessions/*.jsonl` |
 
@@ -130,7 +132,7 @@ echo '{"sync_dir":"~/.tokei/sync","device_id":"'$(hostname -s)'"}' > ~/.tokei/co
 
 | 功能 | Tokei | [CodexBar](https://github.com/steipete/CodexBar) |
 |------|:-----:|:---------:|
-| 支持工具 | 8 | 40+ |
+| 支持工具 | 9 | 40+ |
 | Token 级用量分析 | ✅ | — |
 | 成本估算（317 模型） | ✅ | 部分 |
 | 数据面板（图表 + 热力图） | ✅ | — |
@@ -168,11 +170,11 @@ echo '{"sync_dir":"~/.tokei/sync","device_id":"'$(hostname -s)'"}' > ~/.tokei/co
 
 ## English
 
-Tokei is a **macOS menu bar app** that tracks usage, cost, and performance across **8 AI coding tools** in real-time — all from local log files, with zero network traffic.
+Tokei is a **macOS menu bar app** that tracks usage, cost, and performance across **9 AI coding tools** in real-time — all from local log files, with zero network traffic.
 
 **Features:** Real-time monitoring (30s refresh) · Cost estimation (317 models, OpenRouter pricing) · Dashboard (daily chart, weekly heatmap) · Time ranges (today/week/month/year) · Project-level tracking · Multi-device sync (Git-based, Mac + Linux) · Annual Wrapped · Keep awake · Sit reminder · Privacy-first (local logs only) · [Compare with CodexBar](https://tokei.lanshuagent.com#compare)
 
-**Supported tools:** Claude Code, Codex CLI, Gemini CLI, Grok CLI, Aider, OpenClaw, OpenCode, Qoder
+**Supported tools:** Claude Code, Codex CLI, Gemini CLI, Grok CLI, Hermes, OpenClaw, Pi Coding Agent CLI, OpenCode, Qoder
 
 For full documentation, visit [tokei.lanshuagent.com](https://tokei.lanshuagent.com).
 
