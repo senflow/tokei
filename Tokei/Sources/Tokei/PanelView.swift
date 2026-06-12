@@ -1092,8 +1092,7 @@ struct PanelView: View {
             Button {
                 NSWorkspace.shared.open(URL(string: "https://github.com/cclank/tokei")!)
             } label: {
-                Image(systemName: "link")
-                    .font(.system(size: 10, weight: .bold))
+                GitHubIcon(size: 13)
                     .foregroundStyle(Theme.tTertiary)
                     .frame(width: 24, height: 24)
                     .background(Circle().fill(Color.primary.opacity(0.06)))
@@ -1427,5 +1426,26 @@ struct PanelView: View {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(Color.primary.opacity(0.04))
         )
+    }
+}
+
+struct GitHubIcon: View {
+    var size: CGFloat = 16
+    private static let icon: NSImage? = {
+        guard let url = Bundle.main.url(forResource: "github-mark", withExtension: "png"),
+              let img = NSImage(contentsOf: url) else { return nil }
+        img.isTemplate = true
+        return img
+    }()
+    var body: some View {
+        if let img = Self.icon {
+            Image(nsImage: img)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(width: size, height: size)
+        } else {
+            Image(systemName: "link")
+                .font(.system(size: size * 0.7, weight: .bold))
+        }
     }
 }

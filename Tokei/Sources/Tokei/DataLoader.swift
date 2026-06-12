@@ -47,7 +47,7 @@ final class DataLoader {
     }
 
     static func runScript(args: [String] = ["--json"]) -> Usage? {
-        let result = runScriptRaw(args: args, timeout: 12)
+        let result = runScriptRaw(args: args, timeout: 45)
         guard !result.timedOut, result.exitCode == 0 else {
             fputs("Tokei script failed: exit=\(result.exitCode) timeout=\(result.timedOut)\n\(result.stderr)\n", stderr)
             return nil

@@ -1969,8 +1969,8 @@ def daily_costs():
             d["codex"] += day.get("cost", 0)
             d["x_in"] += day.get("in", 0); d["x_out"] += day.get("out", 0)
             d["x_cached"] += day.get("cached", 0); d["x_reason"] += day.get("reason", 0)
-            # Codex 的 in 已含 cached,总量 = in + out + reason(不重复加 cached)
-            d["tokens"] += day.get("in", 0) + day.get("out", 0) + day.get("reason", 0)
+            # Codex 的 in 已含 cached、out 已含 reason,总量 = in + out
+            d["tokens"] += day.get("in", 0) + day.get("out", 0)
 
     for fp, entry in cache.get("pi", {}).items():
         for dk, day in entry.get("days", {}).items():
@@ -2034,7 +2034,7 @@ def daily_costs():
         if v["cost"] <= 0:
             continue
         if v.get("tool") == "codex":
-            total_tok = v["in"] + v["out"] + v.get("reason", 0)   # in 已含 cached
+            total_tok = v["in"] + v["out"]   # in 已含 cached, out 已含 reason
         else:
             total_tok = v["in"] + v["out"] + v.get("cr", 0) + v.get("cw", 0) + v.get("reason", 0)
         out_k = v["out"] / 1000 if v["out"] else 0
@@ -2109,12 +2109,12 @@ def wrapped():
                 nm = nice_model(mn)
                 model_tok[nm] = model_tok.get(nm, 0) + token_total(mv)
 
-    # --- Codex (in + cached + out + reason) ---
+    # --- Codex (in + out; in 已含 cached, out 已含 reason) ---
     for f, entry in cache.get("codex", {}).items():
         if not isinstance(entry, dict):
             continue
         for dk, day in entry.get("days", {}).items():
-            tok = day.get("in", 0) + day.get("cached", 0) + day.get("out", 0) + day.get("reason", 0)
+            tok = day.get("in", 0) + day.get("out", 0)
             day_tokens[dk] = day_tokens.get(dk, 0) + tok
             total_tokens += tok
             total_cost += day.get("cost", 0)

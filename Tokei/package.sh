@@ -21,6 +21,7 @@ cp "$PROJ_DIR/usage.30s.py" "$APP/Contents/Resources/"
 [ -f "$PROJ_DIR/pricing_overrides.json" ] && cp "$PROJ_DIR/pricing_overrides.json" "$APP/Contents/Resources/"
 [ -f "AppIcon.icns" ] && cp "AppIcon.icns" "$APP/Contents/Resources/"
 [ -d "Sources/Tokei/Resources/sit" ] && cp -R "Sources/Tokei/Resources/sit" "$APP/Contents/Resources/"
+[ -f "Sources/Tokei/Resources/github-mark.png" ] && cp "Sources/Tokei/Resources/github-mark.png" "$APP/Contents/Resources/"
 
 # Info.plist
 cat > "$APP/Contents/Info.plist" <<'PLIST'
