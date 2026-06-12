@@ -46,8 +46,17 @@ final class SitReminder: ObservableObject {
 
     func testPing() { ping("测试提醒:久坐提醒已就绪 ✅") }
 
+    private static let tipCount = 6
+
     private func ping(_ body: String) {
-        DispatchQueue.main.async { ReminderHUD.show(title: "久坐提醒", body: body) }
+        DispatchQueue.main.async {
+            NSSound(named: "Blow")?.play()
+            let i = Int.random(in: 0..<Self.tipCount)
+            if let url = Bundle.main.url(forResource: "tip_\(i)", withExtension: "mp3", subdirectory: "sit") {
+                NSSound(contentsOf: url, byReference: true)?.play()
+            }
+            ReminderHUD.show(title: "久坐提醒", body: body)
+        }
     }
 
     // 系统空闲秒数:读 IOHIDSystem 的 HIDIdleTime(纳秒)。

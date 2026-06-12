@@ -142,7 +142,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let u = store.usage {
             if let q5 = u.claude.q5 { seg(String(format: "%.0f", 100 - q5), Self.claudeColor) }
             if let p5 = u.codex.p5 { seg(String(format: "%.0f", 100 - p5), Self.codexColor) }
-            if s.length == 0 { seg("—", .secondaryLabelColor) }   // 两家额度都暂缺
+            if s.length == 0 {
+                let cr = u.claude.ranges.get(.today)
+                let xr = u.codex.ranges.get(.today)
+                let pr = u.pi.ranges.get(.today)
+                let or = u.opencode.ranges.get(.today)
+                let total = (cr.in + cr.out + cr.cr + cr.cw)
+                    + (xr.in + xr.out + xr.cached + xr.reason)
+                    + (pr.in + pr.out + pr.cr + pr.cw + pr.reason)
+                    + (or.in + or.out + or.cr + or.cw + or.reason)
+                if total > 0 {
+                    seg(Fmt.human(total), .secondaryLabelColor)
+                } else {
+                    let cfg = NSImage.SymbolConfiguration(pointSize: 14, weight: .semibold)
+                        .applying(NSImage.SymbolConfiguration(paletteColors: [Self.claudeColor]))
+                    let img = NSImage(systemSymbolName: "timer", accessibilityDescription: nil)?
+                        .withSymbolConfiguration(cfg)
+                    img?.isTemplate = false
+                    let att = NSTextAttachment(); att.image = img
+                    s.append(NSAttributedString(attachment: att))
+                }
+            }
         } else {
             seg("…", .secondaryLabelColor)                        // 加载中
         }

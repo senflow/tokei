@@ -238,7 +238,7 @@ def human(n: float) -> str:
 # ---------- 增量扫描缓存 ----------
 import tempfile as _tempfile
 _SCAN_CACHE_FILE = os.path.join(_tempfile.gettempdir(), "_tokei_scan_cache.json")
-_SCAN_CACHE_VERSION = 6
+_SCAN_CACHE_VERSION = 7
 
 
 def _load_scan_cache():
@@ -953,81 +953,94 @@ def scan_qoder(bounds, cache):
 
 
 # ---------- Hermes ----------
-# SQLite: ~/.hermes/state.db sessions 表,完整 token + cost 数据。
+# SQLite: ~/.hermes/state.db (旧布局) + ~/.hermes/profiles/*/state.db (profile 布局)
+def _hermes_db_paths():
+    paths = []
+    if os.path.isfile(HERMES_DB):
+        paths.append(HERMES_DB)
+    profiles = os.path.join(HOME, ".hermes", "profiles")
+    if os.path.isdir(profiles):
+        for p in os.listdir(profiles):
+            db = os.path.join(profiles, p, "state.db")
+            if os.path.isfile(db):
+                paths.append(db)
+    return paths
+
+
+def _scan_hermes_db(db_path, _sq):
+    days = {}
+    try:
+        conn = _sq.connect(f"file:{db_path}?mode=ro", uri=True)
+        for row in conn.execute("""
+            SELECT date(started_at,'unixepoch','localtime') as day,
+                   COUNT(*) as cnt, model,
+                   COALESCE(SUM(input_tokens),0),
+                   COALESCE(SUM(output_tokens),0),
+                   COALESCE(SUM(cache_read_tokens),0),
+                   COALESCE(SUM(cache_write_tokens),0),
+                   COALESCE(SUM(reasoning_tokens),0),
+                   COALESCE(SUM(COALESCE(actual_cost_usd,estimated_cost_usd)),0)
+            FROM sessions WHERE started_at > 0
+            GROUP BY day, model
+        """):
+            dk, cnt, model, ti, to_, cr, cw, reason, cost = row
+            if not dk:
+                continue
+            day = days.setdefault(dk, {"in": 0, "out": 0, "cr": 0, "cw": 0,
+                                       "reason": 0, "cost": 0.0, "sessions": 0, "models": {}})
+            day["in"] += int(ti); day["out"] += int(to_)
+            day["cr"] += int(cr); day["cw"] += int(cw)
+            day["reason"] += int(reason); day["cost"] += float(cost)
+            day["sessions"] += int(cnt)
+            if model:
+                mm = day["models"].setdefault(model, {"in": 0, "out": 0, "cost": 0.0})
+                mm["in"] += int(ti); mm["out"] += int(to_); mm["cost"] += float(cost)
+        conn.close()
+    except Exception:
+        pass
+    return days
+
+
 def scan_hermes(bounds, cache):
     import sqlite3 as _sq
     fc = cache.setdefault("hermes", {})
-    empty = {k: {"in": 0, "out": 0, "cr": 0, "cw": 0, "reason": 0, "cost": 0.0,
-                 "sessions": 0, "models": {}} for k in RANGE_KEYS}
-    if not os.path.isfile(HERMES_DB):
-        return {"ranges": empty}
-    try:
-        sig = f"{os.path.getmtime(HERMES_DB)}:{os.path.getsize(HERMES_DB)}"
-    except OSError:
-        return {"ranges": empty}
-    entry = fc.get("db")
-    if not entry or entry.get("sig") != sig:
-        days = {}
-        try:
-            conn = _sq.connect(f"file:{HERMES_DB}?mode=ro", uri=True)
-            for row in conn.execute("""
-                SELECT date(started_at,'unixepoch','localtime') as day,
-                       COUNT(*) as cnt, model,
-                       COALESCE(SUM(input_tokens),0),
-                       COALESCE(SUM(output_tokens),0),
-                       COALESCE(SUM(cache_read_tokens),0),
-                       COALESCE(SUM(cache_write_tokens),0),
-                       COALESCE(SUM(reasoning_tokens),0),
-                       COALESCE(SUM(COALESCE(actual_cost_usd,estimated_cost_usd)),0)
-                FROM sessions WHERE started_at > 0
-                GROUP BY day, model
-            """):
-                dk, cnt, model, ti, to_, cr, cw, reason, cost = row
-                if not dk:
-                    continue
-                day = days.setdefault(dk, {"in": 0, "out": 0, "cr": 0, "cw": 0,
-                                           "reason": 0, "cost": 0.0, "sessions": 0, "models": {}})
-                day["in"] += int(ti); day["out"] += int(to_)
-                day["cr"] += int(cr); day["cw"] += int(cw)
-                day["reason"] += int(reason); day["cost"] += float(cost)
-                day["sessions"] += int(cnt)
-                if model:
-                    mm = day["models"].setdefault(model, {"in": 0, "out": 0, "cost": 0.0})
-                    mm["in"] += int(ti); mm["out"] += int(to_); mm["cost"] += float(cost)
-            conn.close()
-        except Exception:
-            pass
-        fc["db"] = {"sig": sig, "days": days}
-        entry = fc["db"]
 
-    today_d = bounds["today"].date()
-    yest_d = bounds["yesterday"].date()
-    week_d = bounds["week"].date()
-    month_d = bounds["month"].date()
-    year_d = bounds["year"].date()
+    db_paths = _hermes_db_paths()
+    if not db_paths:
+        return {"ranges": {k: {"in": 0, "out": 0, "cr": 0, "cw": 0, "reason": 0, "cost": 0.0,
+                                "sessions": 0, "models": {}} for k in RANGE_KEYS}}
+
+    stale = set(fc.keys())
+    for db_path in db_paths:
+        stale.discard(db_path)
+        try:
+            sig = f"{os.path.getmtime(db_path)}:{os.path.getsize(db_path)}"
+        except OSError:
+            continue
+        entry = fc.get(db_path)
+        if not entry or entry.get("sig") != sig:
+            days = _scan_hermes_db(db_path, _sq)
+            fc[db_path] = {"sig": sig, "days": days}
+    for p in stale:
+        fc.pop(p, None)
 
     B = {k: {"in": 0, "out": 0, "cr": 0, "cw": 0, "reason": 0, "cost": 0.0,
              "sessions": 0, "models": {}} for k in RANGE_KEYS}
-    for dk, day in entry.get("days", {}).items():
-        try:
-            d = date.fromisoformat(dk)
-        except ValueError:
-            continue
-        ks = []
-        if d == today_d: ks.append("today")
-        if d == yest_d: ks.append("yesterday")
-        if d >= week_d: ks.append("week")
-        if d >= month_d: ks.append("month")
-        if d >= year_d: ks.append("year")
-        for k in ks:
-            b = B[k]
-            b["in"] += day["in"]; b["out"] += day["out"]
-            b["cr"] += day["cr"]; b["cw"] += day["cw"]
-            b["reason"] += day["reason"]; b["cost"] += day["cost"]
-            b["sessions"] += day["sessions"]
-            for mn, mv in day.get("models", {}).items():
-                mm = b["models"].setdefault(mn, {"in": 0, "out": 0, "cost": 0.0})
-                mm["in"] += mv["in"]; mm["out"] += mv["out"]; mm["cost"] += mv["cost"]
+    for db_path, entry in fc.items():
+        for dk, day in entry.get("days", {}).items():
+            try:
+                d = date.fromisoformat(dk)
+            except ValueError:
+                continue
+            for k in classify_date(d, bounds):
+                b = B[k]
+                b["in"] += day["in"]; b["out"] += day["out"]
+                b["cr"] += day["cr"]; b["cw"] += day["cw"]
+                b["reason"] += day["reason"]; b["cost"] += day["cost"]
+                b["sessions"] += day["sessions"]
+                for mn, mv in day.get("models", {}).items():
+                    mm = b["models"].setdefault(mn, {"in": 0, "out": 0, "cost": 0.0})
+                    mm["in"] += mv["in"]; mm["out"] += mv["out"]; mm["cost"] += mv["cost"]
     return {"ranges": B}
 
 
@@ -1782,23 +1795,25 @@ def _scan_local_models():
     models = set()
     for f in glob.glob(os.path.join(CLAUDE_DIR, "**", "*.jsonl"), recursive=True):
         try:
-            for line in open(f, encoding="utf-8", errors="ignore"):
-                if '"model"' not in line:
-                    continue
-                try:
-                    m = json.loads(line).get("message", {}).get("model", "")
-                    if m and m != "<synthetic>":
-                        models.add(m)
-                except Exception:
-                    pass
+            with open(f, encoding="utf-8", errors="ignore") as fh:
+                for line in fh:
+                    if '"model"' not in line:
+                        continue
+                    try:
+                        m = json.loads(line).get("message", {}).get("model", "")
+                        if m and m != "<synthetic>":
+                            models.add(m)
+                    except Exception:
+                        pass
         except OSError:
             pass
     for f in glob.glob(os.path.join(GEMINI_DIR, "*", "chats", "session-*.json")):
         try:
-            for msg in json.load(open(f)).get("messages", []):
-                m = msg.get("model", "")
-                if m:
-                    models.add(m)
+            with open(f, encoding="utf-8", errors="ignore") as fh:
+                for msg in json.load(fh).get("messages", []):
+                    m = msg.get("model", "")
+                    if m:
+                        models.add(m)
         except Exception:
             pass
     for root in _pi_session_dirs():
@@ -1806,16 +1821,17 @@ def _scan_local_models():
             continue
         for f in glob.glob(os.path.join(root, "**", "*.jsonl"), recursive=True):
             try:
-                for line in open(f, encoding="utf-8", errors="ignore"):
-                    if '"usage"' not in line:
-                        continue
-                    try:
-                        o = json.loads(line)
-                        msg = o.get("message") or {}
-                        if msg.get("role") == "assistant":
-                            models.add(_pi_model_id(msg))
-                    except Exception:
-                        pass
+                with open(f, encoding="utf-8", errors="ignore") as fh:
+                    for line in fh:
+                        if '"usage"' not in line:
+                            continue
+                        try:
+                            o = json.loads(line)
+                            msg = o.get("message") or {}
+                            if msg.get("role") == "assistant":
+                                models.add(_pi_model_id(msg))
+                        except Exception:
+                            pass
             except OSError:
                 pass
     return models
@@ -1926,7 +1942,7 @@ def daily_costs():
     days = {}
     models = {}
 
-    _empty = lambda: {"claude": 0.0, "codex": 0.0, "pi": 0.0,
+    _empty = lambda: {"claude": 0.0, "codex": 0.0, "pi": 0.0, "opencode": 0.0,
                        "c_in": 0, "c_out": 0, "c_cr": 0, "c_cw": 0,
                        "x_in": 0, "x_out": 0, "x_cached": 0, "x_reason": 0,
                        "p_in": 0, "p_out": 0, "p_cr": 0, "p_cw": 0, "p_reason": 0,
@@ -1971,6 +1987,23 @@ def daily_costs():
                 for key in TOKEN_FIELDS:
                     m[key] += mv.get(key, 0)
 
+    for fp, entry in cache.get("opencode", {}).items():
+        day_data = entry.get("day")
+        if not day_data:
+            continue
+        dk = day_data.get("date")
+        if not dk:
+            continue
+        d = days.setdefault(dk, _empty())
+        d["opencode"] += day_data.get("cost", 0)
+        d["tokens"] += token_total(day_data)
+        for mn, mv in day_data.get("models", {}).items():
+            nm = f"{nice_model(mn)} (OpenCode)"
+            m = models.setdefault(nm, {"cost": 0.0, "in": 0, "out": 0, "cr": 0, "cw": 0, "reason": 0, "tool": "opencode"})
+            m["cost"] += mv.get("cost", 0)
+            for key in TOKEN_FIELDS:
+                m[key] += mv.get(key, 0)
+
     for fp, entry in cache.get("hermes", {}).items():
         for dk, day in entry.get("days", {}).items():
             d = days.setdefault(dk, _empty())
@@ -1990,7 +2023,7 @@ def daily_costs():
                                       "reason": codex_reason, "tool": "codex"}
 
     daily = [{"date": dk, "claude": round(v["claude"], 2), "codex": round(v["codex"], 2), "pi": round(v["pi"], 2),
-              "total": round(v["claude"] + v["codex"] + v["pi"], 2),
+              "total": round(v["claude"] + v["codex"] + v["pi"] + v["opencode"], 2),
               "c_in": v["c_in"], "c_out": v["c_out"], "c_cr": v["c_cr"], "c_cw": v["c_cw"],
               "x_in": v["x_in"], "x_out": v["x_out"], "x_cached": v["x_cached"], "x_reason": v["x_reason"],
               "p_in": v["p_in"], "p_out": v["p_out"], "p_cr": v["p_cr"], "p_cw": v["p_cw"], "p_reason": v["p_reason"],

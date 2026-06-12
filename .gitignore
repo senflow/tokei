@@ -6,3 +6,4 @@ __pycache__/
 .wrangler/
 .playwright-mcp/
 *.png
+tokei-article.md

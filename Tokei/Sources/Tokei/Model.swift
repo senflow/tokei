@@ -382,6 +382,19 @@ struct TokenUsageRange: Codable {
         self.sessions = sessions
         self.models = models
     }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        hit = try c.decodeIfPresent(Double.self, forKey: .hit) ?? 0
+        `in` = try c.decodeIfPresent(Int.self, forKey: .in) ?? 0
+        out = try c.decodeIfPresent(Int.self, forKey: .out) ?? 0
+        cr = try c.decodeIfPresent(Int.self, forKey: .cr) ?? 0
+        cw = try c.decodeIfPresent(Int.self, forKey: .cw) ?? 0
+        reason = try c.decodeIfPresent(Int.self, forKey: .reason) ?? 0
+        cost = try c.decodeIfPresent(Double.self, forKey: .cost) ?? 0
+        sessions = try c.decodeIfPresent(Int.self, forKey: .sessions) ?? 0
+        models = try c.decodeIfPresent([TokenModelStat].self, forKey: .models) ?? []
+    }
 }
 struct TokenUsageRanges: Codable {
     var today, yesterday, week, last_week, month, year: TokenUsageRange

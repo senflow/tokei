@@ -241,9 +241,13 @@ struct PanelView: View {
                     .init("bolt.fill", "缓存读", Fmt.human(r.cr)),
                     .init("square.stack.3d.up.fill", "缓存写", Fmt.human(r.cw)),
                 ], tint: Theme.claude)
-                if !r.models.isEmpty {
-                    modelDisclosure(r.models.map { ModelRow(name: $0.name, pin: $0.pin, pout: $0.pout, cost: $0.cost) },
-                                    open: $claudeModelsOpen, tint: Theme.claude)
+                let claudeRows = r.models.filter { $0.name != "合成" }.map { m in
+                    let denom = m.cr + m.cw + m.in
+                    let hit = denom > 0 ? Double(m.cr) / Double(denom) * 100 : 0
+                    return ModelRow(name: m.name, pin: m.pin, pout: m.pout, cost: m.cost, total: m.total, hit: hit)
+                }
+                if !claudeRows.isEmpty {
+                    modelDisclosure(claudeRows, open: $claudeModelsOpen, tint: Theme.claude)
                 }
                 if c.q5 != nil || c.q7 != nil { thinDivider }
                 if let q5 = c.q5 {
@@ -317,8 +321,13 @@ struct PanelView: View {
                     return items
                 }(), tint: Theme.gemini)
                 if !r.models.isEmpty {
-                    modelDisclosure(r.models.map { ModelRow(name: $0.name, pin: $0.pin, pout: $0.pout, cost: $0.cost) },
-                                    open: $geminiModelsOpen, tint: Theme.gemini)
+                    let geminiRows = r.models.map { m in
+                        let total = m.in + m.out + m.cached + m.thoughts
+                        let denom = m.cached + m.in
+                        let hit = denom > 0 ? Double(m.cached) / Double(denom) * 100 : 0
+                        return ModelRow(name: m.name, pin: m.pin, pout: m.pout, cost: m.cost, total: total, hit: hit)
+                    }
+                    modelDisclosure(geminiRows, open: $geminiModelsOpen, tint: Theme.gemini)
                 }
             } else {
                 emptyHint
@@ -547,6 +556,8 @@ struct PanelView: View {
         var pin: Double
         var pout: Double
         var cost: Double
+        var total: Int = 0
+        var hit: Double = 0
         var id: String { name }
     }
 
@@ -648,12 +659,19 @@ struct PanelView: View {
                         Circle().fill(tint.opacity(0.7)).frame(width: 5, height: 5)
                         Text(m.name).font(.system(size: 11.5)).foregroundStyle(Theme.tPrimary)
                             .lineLimit(1)
-                        Text("\(Fmt.price(m.pin))/\(Fmt.price(m.pout))")
-                            .font(.system(size: 9, design: .monospaced))
-                            .foregroundStyle(Theme.tSecondary)
-                            .padding(.horizontal, 5).padding(.vertical, 1.5)
-                            .background(Capsule().fill(Color.primary.opacity(0.08)))
-                        Spacer(minLength: 8)
+                        Spacer(minLength: 4)
+                        if m.total > 0 {
+                            Text(Fmt.human(m.total))
+                                .font(.system(size: 9.5, design: .monospaced))
+                                .foregroundStyle(Theme.tTertiary)
+                        }
+                        if m.hit > 0 {
+                            Text(String(format: "%.0f%%", m.hit))
+                                .font(.system(size: 9.5, design: .monospaced))
+                                .foregroundStyle(Theme.tTertiary)
+                                .padding(.horizontal, 4).padding(.vertical, 1)
+                                .background(Capsule().fill(Color.primary.opacity(0.06)))
+                        }
                         Text(String(format: "$%.2f", m.cost))
                             .font(.system(size: 11.5, weight: .semibold, design: .monospaced))
                             .foregroundStyle(Theme.tPrimary)
@@ -1072,6 +1090,17 @@ struct PanelView: View {
             }
             Spacer()
             Button {
+                NSWorkspace.shared.open(URL(string: "https://github.com/cclank/tokei")!)
+            } label: {
+                Image(systemName: "link")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(Theme.tTertiary)
+                    .frame(width: 24, height: 24)
+                    .background(Circle().fill(Color.primary.opacity(0.06)))
+            }
+            .buttonStyle(.plain)
+            .tip("GitHub")
+            Button {
                 withAnimation(.easeInOut(duration: 0.25)) { mode = .cards }
             } label: {
                 Image(systemName: "xmark")
@@ -1324,7 +1353,7 @@ struct PanelView: View {
         return lines.joined(separator: "\n")
     }
 
-    static let buildVersion = "2026.0609"
+    static let buildVersion = "2026.0612"
 
     static var skillPath: String {
         return "https://raw.githubusercontent.com/cclank/tokei/main/skills/tokei-setup.md"

@@ -122,7 +122,7 @@ echo '{"sync_dir":"~/.tokei/sync","device_id":"'$(hostname -s)'"}' > ~/.tokei/co
 | Codex CLI | `~/.codex/sessions/YYYY/MM/DD/*.jsonl` |
 | Gemini CLI | `~/.gemini/gemini-cli/conversations/*.json` |
 | Grok CLI | `~/.grok/sessions/YYYY/MM/DD/*.jsonl` |
-| Hermes | `~/.hermes/state.db` |
+| Hermes | `~/.hermes/state.db` + `~/.hermes/profiles/*/state.db` |
 | OpenClaw | `~/.openclaw/agents/*/sessions/*.jsonl` + SQLite |
 | Pi Coding Agent CLI | `~/.pi/agent/sessions/<project>/*.jsonl` |
 | OpenCode | `~/.opencode/sessions/*.json` |
