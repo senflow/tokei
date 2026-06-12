@@ -149,6 +149,16 @@ echo '{"sync_dir":"~/.tokei/sync","device_id":"'$(hostname -s)'"}' > ~/.tokei/co
 
 ## 更新日志
 
+### v1.0.2
+- feat: 久坐提醒语音播报（百炼 CosyVoice 龙婉音色，6 段预合成语音）
+- feat: 按模型显示 token 总量 + 缓存命中率
+- feat: Hermes 多 profile 支持（`~/.hermes/profiles/*/state.db`）
+- feat: 设置页 GitHub 链接按钮
+- fix: 菜单栏无配额时兜底显示今日总 token 或品牌图标
+- fix: 3 处文件句柄泄漏（Claude/Gemini/Pi 扫描）
+- fix: Hermes「上周」数据缺失
+- fix: OpenCode 成本纳入每日汇总
+
 ### v1.0.1
 - fix: Claude Code 按 message ID 去重，修复重复计数问题
 - fix: Claude Code 扫描 subagent/workflow 日志（之前遗漏）
