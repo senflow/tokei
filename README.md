@@ -150,7 +150,7 @@ echo '{"sync_dir":"~/.tokei/sync","device_id":"'$(hostname -s)'"}' > ~/.tokei/co
 ## 更新日志
 
 ### v1.0.2
-- feat: 久坐提醒语音播报（百炼 CosyVoice 龙婉音色，6 段预合成语音）
+- feat: 久坐提醒语音播报
 - feat: 按模型显示 token 总量 + 缓存命中率
 - feat: Hermes 多 profile 支持（`~/.hermes/profiles/*/state.db`）
 - feat: 设置页 GitHub 链接按钮
