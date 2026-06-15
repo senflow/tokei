@@ -753,7 +753,7 @@ struct PanelView: View {
                                 updateSpin = true
                             }
                         }
-                    Image(systemName: "arrow.down")
+                    Image(systemName: "arrow.up")
                         .font(.system(size: 10, weight: .bold))
                         .foregroundStyle(.white)
                 }
@@ -783,7 +783,7 @@ struct PanelView: View {
                     )
                     .frame(width: 26, height: 26)
                     .rotationEffect(.degrees(updateSpin ? 360 : 0))
-                Image(systemName: "square.and.arrow.down")
+                Image(systemName: "square.and.arrow.up")
                     .font(.system(size: 9, weight: .bold))
                     .foregroundStyle(Theme.claude)
             }
