@@ -149,6 +149,11 @@ echo '{"sync_dir":"~/.tokei/sync","device_id":"'$(hostname -s)'"}' > ~/.tokei/co
 
 ## 更新日志
 
+### v1.0.5
+- fix: 彻底消除外部 zstd 二进制依赖，根治 Gatekeeper 拦截问题
+- fix: Swift 内置 CZstd 解压修复（帧边界精确定位）
+- feat: 设置关闭工具卡片后菜单栏同步隐藏对应额度
+
 ### v1.0.4
 - feat: 回顾支持时间周期筛选（今日/本周/本月/今年/全部），模型用量联动
 - feat: 新增「永动机」成就（24h 全时段活跃）

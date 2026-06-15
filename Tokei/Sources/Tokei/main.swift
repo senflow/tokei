@@ -143,17 +143,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         if let u = store.usage {
-            if let q5 = u.claude.q5 { seg(String(format: "%.0f", 100 - q5), Self.claudeColor) }
-            if let p5 = u.codex.p5 { seg(String(format: "%.0f", 100 - p5), Self.codexColor) }
+            let ud = UserDefaults.standard
+            if ud.object(forKey: "showClaude") as? Bool ?? true,
+               let q5 = u.claude.q5 { seg(String(format: "%.0f", 100 - q5), Self.claudeColor) }
+            if ud.object(forKey: "showCodex") as? Bool ?? true,
+               let p5 = u.codex.p5 { seg(String(format: "%.0f", 100 - p5), Self.codexColor) }
             if s.length == 0 {
-                let cr = u.claude.ranges.get(.today)
-                let xr = u.codex.ranges.get(.today)
-                let pr = u.pi.ranges.get(.today)
-                let or = u.opencode.ranges.get(.today)
-                let total = (cr.in + cr.out + cr.cr + cr.cw)
-                    + (xr.in + xr.out + xr.cached + xr.reason)
-                    + (pr.in + pr.out + pr.cr + pr.cw + pr.reason)
-                    + (or.in + or.out + or.cr + or.cw + or.reason)
+                let showC = ud.object(forKey: "showClaude") as? Bool ?? true
+                let showX = ud.object(forKey: "showCodex") as? Bool ?? true
+                let showP = ud.object(forKey: "showPi") as? Bool ?? true
+                let showO = ud.object(forKey: "showOpenCode") as? Bool ?? true
+                var total = 0
+                if showC { let r = u.claude.ranges.get(.today); total += Int(r.in + r.out + r.cr + r.cw) }
+                if showX { let r = u.codex.ranges.get(.today); total += Int(r.in + r.out + r.cached + r.reason) }
+                if showP { let r = u.pi.ranges.get(.today); total += Int(r.in + r.out + r.cr + r.cw + r.reason) }
+                if showO { let r = u.opencode.ranges.get(.today); total += Int(r.in + r.out + r.cr + r.cw + r.reason) }
                 if total > 0 {
                     seg(Fmt.human(total), .secondaryLabelColor)
                 } else {

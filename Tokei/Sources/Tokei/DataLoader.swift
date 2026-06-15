@@ -73,14 +73,20 @@ final class DataLoader {
     }
 
     private static func zstdDecompress(_ src: Data) -> Data? {
-        let srcSize = src.count
-        let bound = ZSTD_getFrameContentSize(Array(src), srcSize)
+        let bufSize = src.count
+        let frameSize = src.withUnsafeBytes { ptr -> Int in
+            ZSTD_findFrameCompressedSize(ptr.baseAddress, bufSize)
+        }
+        guard ZSTD_isError(frameSize) == 0 else { return nil }
+        let bound = src.withUnsafeBytes { ptr -> UInt64 in
+            ZSTD_getFrameContentSize(ptr.baseAddress, frameSize)
+        }
         let dstSize = (bound == ZSTD_CONTENTSIZE_ERROR || bound == ZSTD_CONTENTSIZE_UNKNOWN)
-            ? srcSize * 10
+            ? max(frameSize * 20, 4096)
             : Int(bound)
         var dst = [UInt8](repeating: 0, count: dstSize)
         let ret = src.withUnsafeBytes { srcPtr -> Int in
-            ZSTD_decompress(&dst, dstSize, srcPtr.baseAddress, srcSize)
+            ZSTD_decompress(&dst, dstSize, srcPtr.baseAddress, frameSize)
         }
         guard ZSTD_isError(ret) == 0 else { return nil }
         return Data(dst.prefix(ret))
