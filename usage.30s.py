@@ -1398,9 +1398,61 @@ def _iso_to_epoch(s):
     return int(dt.timestamp()) if dt else None
 
 
+def _find_zstd_cmd():
+    """查找系统 zstd（Homebrew 等），不使用任何捆绑二进制。"""
+    import shutil
+    for p in [shutil.which("zstd"), "/opt/homebrew/bin/zstd", "/usr/local/bin/zstd"]:
+        if p and os.path.isfile(p) and os.access(p, os.X_OK):
+            return lambda f, _p=p: [_p, "-dc", f]
+    return None
+
+
 def _scan_claude_plan_raw():
-    # zstd 解压已由 Swift 端 CZstd 处理,Python 端不再调用外部 zstd CLI。
+    import subprocess
+    import tempfile
+    zstd_cmd = _find_zstd_cmd()
+    if not os.path.isdir(CLAUDE_CACHE) or not zstd_cmd:
+        return {}
+    cand = None
+    for f in glob.glob(os.path.join(CLAUDE_CACHE, "*_0")):
+        try:
+            data = open(f, "rb").read()
+        except OSError:
+            continue
+        if b"organizations/" in data and b"/usage" in data and b"\x28\xb5\x2f\xfd" in data:
+            mt = os.path.getmtime(f)
+            if cand is None or mt > cand[0]:
+                cand = (mt, data)
+    if cand is None:
+        return {}
+    data = cand[1]
+    i = data.find(b"\x28\xb5\x2f\xfd")
+    if i < 0:
+        return {}
+    tmp = os.path.join(tempfile.gettempdir(), "_tokei_claude.zst")
+    try:
+        with open(tmp, "wb") as fh:
+            fh.write(data[i:])
+        proc = subprocess.run(zstd_cmd(tmp), capture_output=True, timeout=5)
+        raw = proc.stdout
+    except Exception:
+        return {}
+    finally:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+    try:
+        j = json.loads(raw)
+    except Exception:
+        return {}
+    fh_ = j.get("five_hour") or {}
+    sd = j.get("seven_day") or {}
     return {
+        "q5": fh_.get("utilization"),
+        "q5_reset": _iso_to_epoch(fh_.get("resets_at")),
+        "q7": sd.get("utilization"),
+        "q7_reset": _iso_to_epoch(sd.get("resets_at")),
     }
 
 
