@@ -1399,13 +1399,15 @@ def _iso_to_epoch(s):
 
 
 def _find_zstd():
-    import shutil
+    import shutil, subprocess
     p = shutil.which("zstd")
     if p:
         return p
     for candidate in ["/opt/homebrew/bin/zstd", "/usr/local/bin/zstd",
                       os.path.join(os.path.dirname(os.path.abspath(__file__)), "zstd")]:
         if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            subprocess.run(["xattr", "-d", "com.apple.quarantine", candidate],
+                           capture_output=True)
             return candidate
     return None
 

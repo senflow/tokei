@@ -33,8 +33,13 @@ final class DataLoader {
                 try? FileManager.default.copyItem(atPath: src, toPath: dst)
                 if name == "zstd" {
                     try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dst)
-                    let u = URL(fileURLWithPath: dst)
-                    try? (u as NSURL).setResourceValue(nil, forKey: .quarantinePropertiesKey)
+                    try? (URL(fileURLWithPath: dst) as NSURL).setResourceValue(nil, forKey: .quarantinePropertiesKey)
+                    let p = Process()
+                    p.executableURL = URL(fileURLWithPath: "/usr/bin/xattr")
+                    p.arguments = ["-d", "com.apple.quarantine", dst]
+                    p.standardOutput = FileHandle.nullDevice
+                    p.standardError = FileHandle.nullDevice
+                    try? p.run(); p.waitUntilExit()
                 }
             } else if !FileManager.default.fileExists(atPath: dst) {
                 try? FileManager.default.copyItem(atPath: src, toPath: dst)
