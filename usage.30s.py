@@ -246,13 +246,19 @@ def _load_scan_cache():
         with open(_SCAN_CACHE_FILE, "r") as f:
             c = json.load(f)
         if c.get("v") != _SCAN_CACHE_VERSION:
-            return {"v": _SCAN_CACHE_VERSION}
+            return {"v": _SCAN_CACHE_VERSION, "_dirty": True}
+        c["_dirty"] = False
+        c["_keys"] = set(c.keys())
         return c
     except Exception:
-        return {"v": _SCAN_CACHE_VERSION}
+        return {"v": _SCAN_CACHE_VERSION, "_dirty": True}
 
 
 def _save_scan_cache(cache):
+    prev_keys = cache.pop("_keys", set())
+    dirty = cache.pop("_dirty", False) or set(cache.keys()) != prev_keys
+    if not dirty:
+        return
     cache["v"] = _SCAN_CACHE_VERSION
     try:
         with open(_SCAN_CACHE_FILE, "w") as f:

@@ -43,21 +43,25 @@ final class DataLoader {
             .appendingPathComponent("Library/Application Support/Claude/Cache/Cache_Data").path
         guard FileManager.default.fileExists(atPath: cacheDir) else { return nil }
         let zstdMagic: [UInt8] = [0x28, 0xb5, 0x2f, 0xfd]
-        var best: (Date, Data)?
         let fm = FileManager.default
-        guard let files = try? fm.contentsOfDirectory(atPath: cacheDir) else { return nil }
-        for name in files where name.hasSuffix("_0") {
+        guard let allFiles = try? fm.contentsOfDirectory(atPath: cacheDir) else { return nil }
+        let cacheFiles = allFiles.filter { $0.hasSuffix("_0") }.map { name -> (String, Date) in
             let path = (cacheDir as NSString).appendingPathComponent(name)
+            let mt = (try? fm.attributesOfItem(atPath: path)[.modificationDate] as? Date) ?? .distantPast
+            return (path, mt)
+        }.sorted { $0.1 > $1.1 }
+        let needle1 = "organizations/".data(using: .utf8)!
+        let needle2 = "/usage".data(using: .utf8)!
+        var raw: Data?
+        for (path, _) in cacheFiles.prefix(200) {
             guard let data = fm.contents(atPath: path) else { continue }
-            let needle1 = "organizations/".data(using: .utf8)!
-            let needle2 = "/usage".data(using: .utf8)!
             guard data.range(of: needle1) != nil,
                   data.range(of: needle2) != nil,
                   data.range(of: Data(zstdMagic)) != nil else { continue }
-            let mt = (try? fm.attributesOfItem(atPath: path)[.modificationDate] as? Date) ?? .distantPast
-            if best == nil || mt > best!.0 { best = (mt, data) }
+            raw = data
+            break
         }
-        guard let (_, raw) = best else { return nil }
+        guard let raw = raw else { return nil }
         guard let magicRange = raw.range(of: Data(zstdMagic)) else { return nil }
         let compressed = raw[magicRange.lowerBound...]
         guard let decompressed = zstdDecompress(Data(compressed)) else { return nil }
@@ -136,10 +140,22 @@ final class DataLoader {
         }
     }
 
+    private static let pythonPath: String = {
+        for p in ["/opt/homebrew/bin/python3", "/usr/local/bin/python3", "/usr/bin/python3"] {
+            if FileManager.default.fileExists(atPath: p) { return p }
+        }
+        return "/usr/bin/env"
+    }()
+
     static func runScriptRaw(args: [String] = ["--json"], timeout: TimeInterval = 8) -> ScriptResult {
         let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        proc.arguments = ["python3", scriptPath] + args
+        if pythonPath == "/usr/bin/env" {
+            proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            proc.arguments = ["python3", scriptPath] + args
+        } else {
+            proc.executableURL = URL(fileURLWithPath: pythonPath)
+            proc.arguments = [scriptPath] + args
+        }
         let outPipe = Pipe()
         let errPipe = Pipe()
         proc.standardOutput = outPipe

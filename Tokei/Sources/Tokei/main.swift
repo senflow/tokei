@@ -17,15 +17,24 @@ final class Store: ObservableObject {
     @AppStorage("showAllDevices") var showAllDevices = true
     @AppStorage("syncEnabled") var syncEnabled = false
 
+    private var retryCount = 0
+
     func refresh() {
         DataLoader.load { [weak self] u in
             guard let self = self else { return }
             guard var local = u else {
-                self.loadError = "读取用量失败"
-                self.lastUpdated = "加载失败"
+                if self.usage == nil && self.retryCount < 3 {
+                    self.retryCount += 1
+                    self.lastUpdated = "加载中…(\(self.retryCount))"
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 3) { self.refresh() }
+                } else {
+                    self.loadError = "读取用量失败"
+                    self.lastUpdated = "加载失败"
+                }
                 (NSApp.delegate as? AppDelegate)?.updateStatusTitle()
                 return
             }
+            self.retryCount = 0
             self.loadError = nil
             if self.syncEnabled && self.showAllDevices {
                 let p = self.syncManager.loadPeers()

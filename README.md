@@ -149,10 +149,17 @@ echo '{"sync_dir":"~/.tokei/sync","device_id":"'$(hostname -s)'"}' > ~/.tokei/co
 
 ## 更新日志
 
+### v1.0.6
+- perf: 脚本性能优化 10 倍（6.5s→0.6s），CPU 占用从 ~22% 降至 ~1%
+- fix: 首次加载失败自动重试 3 次，不再直接显示错误
+- fix: Python 路径探测，解决 GUI 应用 PATH 缺失问题
+
 ### v1.0.5
 - fix: 彻底消除外部 zstd 二进制依赖，根治 Gatekeeper 拦截问题
 - fix: Swift 内置 CZstd 解压修复（帧边界精确定位）
 - feat: 设置关闭工具卡片后菜单栏同步隐藏对应额度
+- feat: 设置页手动检查更新按钮
+- fix: 移除过时的 zstd 安装提示
 
 ### v1.0.4
 - feat: 回顾支持时间周期筛选（今日/本周/本月/今年/全部），模型用量联动
