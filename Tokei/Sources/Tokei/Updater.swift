@@ -18,7 +18,10 @@ final class Updater: NSObject, ObservableObject, URLSessionDownloadDelegate {
     static let releaseTag = "v1.0.3"
     @Published var state: State = .idle
 
-    private let apiURL = URL(string: "https://api.github.com/repos/cclank/tokei/releases/latest")!
+    private let apiURLs = [
+        URL(string: "https://dl.lanshuagent.com/tokei/latest.json")!,
+        URL(string: "https://api.github.com/repos/cclank/tokei/releases/latest")!,
+    ]
     private var downloadTask: URLSessionDownloadTask?
     private lazy var session: URLSession = {
         let config = URLSessionConfiguration.default
@@ -48,21 +51,37 @@ final class Updater: NSObject, ObservableObject, URLSessionDownloadDelegate {
             if case .failed = state { return true }; return false
         }() else { return }
         state = .checking
-        var req = URLRequest(url: apiURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 10)
+        tryCheck(index: 0)
+    }
+
+    private func tryCheck(index: Int) {
+        guard index < apiURLs.count else {
+            state = .failed("网络不可用")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+                if case .failed = self?.state { self?.state = .idle }
+            }
+            return
+        }
+        var req = URLRequest(url: apiURLs[index], cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 10)
         req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         URLSession.shared.dataTask(with: req) { [weak self] data, _, _ in
             DispatchQueue.main.async {
-                guard let self = self, let data = data else {
-                    self?.state = .idle
+                guard let self = self else { return }
+                guard let data = data,
+                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let tag = json["tag_name"] as? String else {
+                    self.tryCheck(index: index + 1)
                     return
                 }
-                guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                      let tag = json["tag_name"] as? String,
-                      let assets = json["assets"] as? [[String: Any]],
-                      let first = assets.first,
-                      let urlStr = first["browser_download_url"] as? String,
-                      let url = URL(string: urlStr) else {
-                    self.state = .idle
+                let dlURL: URL? = {
+                    if let u = json["download_url"] as? String { return URL(string: u) }
+                    if let assets = json["assets"] as? [[String: Any]],
+                       let first = assets.first,
+                       let u = first["browser_download_url"] as? String { return URL(string: u) }
+                    return nil
+                }()
+                guard let url = dlURL else {
+                    self.tryCheck(index: index + 1)
                     return
                 }
                 if Self.isNewer(remote: tag, local: Self.releaseTag) {
