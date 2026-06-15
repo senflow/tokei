@@ -1188,6 +1188,27 @@ struct PanelView: View {
             }
             .buttonStyle(.plain)
             .tip("GitHub")
+            if case .idle = updater.state {
+                Button { updater.checkForUpdate() } label: {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Theme.tTertiary)
+                        .frame(width: 24, height: 24)
+                        .background(Circle().fill(Color.primary.opacity(0.06)))
+                }
+                .buttonStyle(.plain)
+                .tip("检查更新")
+            } else if case .checking = updater.state {
+                ProgressView()
+                    .controlSize(.small)
+                    .frame(width: 24, height: 24)
+            } else if case .upToDate = updater.state {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.green)
+                    .frame(width: 24, height: 24)
+            }
+            updatePill
             Button {
                 withAnimation(.easeInOut(duration: 0.25)) { mode = .cards }
             } label: {
