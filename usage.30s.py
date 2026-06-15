@@ -1413,19 +1413,20 @@ def _zstd_decompress(data):
 def _scan_claude_plan_raw():
     if not os.path.isdir(CLAUDE_CACHE):
         return {}
+    files = glob.glob(os.path.join(CLAUDE_CACHE, "*_0"))
+    files.sort(key=os.path.getmtime, reverse=True)
     cand = None
-    for f in glob.glob(os.path.join(CLAUDE_CACHE, "*_0")):
+    for f in files[:200]:
         try:
             data = open(f, "rb").read()
         except OSError:
             continue
         if b"organizations/" in data and b"/usage" in data and b"\x28\xb5\x2f\xfd" in data:
-            mt = os.path.getmtime(f)
-            if cand is None or mt > cand[0]:
-                cand = (mt, data)
+            cand = data
+            break
     if cand is None:
         return {}
-    data = cand[1]
+    data = cand
     i = data.find(b"\x28\xb5\x2f\xfd")
     if i < 0:
         return {}
