@@ -1398,58 +1398,9 @@ def _iso_to_epoch(s):
     return int(dt.timestamp()) if dt else None
 
 
-def _find_zstd_cmd():
-    """Return cmd factory or None. Bundled zstd no longer needed — Swift side handles decompression."""
-    import shutil
-    for p in [shutil.which("zstd"), "/opt/homebrew/bin/zstd", "/usr/local/bin/zstd"]:
-        if p and os.path.isfile(p) and os.access(p, os.X_OK):
-            return lambda f, _p=p: [_p, "-dc", f]
-    return None
-
-
 def _scan_claude_plan_raw():
-    import subprocess
-    import tempfile
-    zstd_cmd = _find_zstd_cmd()
-    if not os.path.isdir(CLAUDE_CACHE) or not zstd_cmd:
-        return None
-    cand = None
-    for f in glob.glob(os.path.join(CLAUDE_CACHE, "*_0")):
-        try:
-            data = open(f, "rb").read()
-        except OSError:
-            continue
-        if b"organizations/" in data and b"/usage" in data and b"\x28\xb5\x2f\xfd" in data:
-            mt = os.path.getmtime(f)
-            if cand is None or mt > cand[0]:
-                cand = (mt, data)
-    if cand is None:
-        return None
-    data = cand[1]
-    i = data.find(b"\x28\xb5\x2f\xfd")  # zstd magic
-    if i < 0:
-        return None
-    tmp = os.path.join(tempfile.gettempdir(), "_tokei_claude.zst")
-    try:
-        with open(tmp, "wb") as fh:
-            fh.write(data[i:])
-        raw = subprocess.run(zstd_cmd(tmp), capture_output=True).stdout
-    finally:
-        try:
-            os.remove(tmp)
-        except OSError:
-            pass
-    try:
-        j = json.loads(raw)
-    except Exception:
-        return None
-    fh_ = j.get("five_hour") or {}
-    sd = j.get("seven_day") or {}
+    # zstd 解压已由 Swift 端 CZstd 处理,Python 端不再调用外部 zstd CLI。
     return {
-        "q5": fh_.get("utilization"),
-        "q5_reset": _iso_to_epoch(fh_.get("resets_at")),
-        "q7": sd.get("utilization"),
-        "q7_reset": _iso_to_epoch(sd.get("resets_at")),
     }
 
 
