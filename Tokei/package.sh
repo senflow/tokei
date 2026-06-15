@@ -23,10 +23,14 @@ cp "$PROJ_DIR/usage.30s.py" "$APP/Contents/Resources/"
 [ -d "Sources/Tokei/Resources/sit" ] && cp -R "Sources/Tokei/Resources/sit" "$APP/Contents/Resources/"
 [ -f "Sources/Tokei/Resources/github-mark.png" ] && cp "Sources/Tokei/Resources/github-mark.png" "$APP/Contents/Resources/"
 
-# 打包 zstd 二进制(用于解压 Claude Desktop 缓存中的配额数据)
-ZSTD_BIN="$(command -v zstd 2>/dev/null)"
-if [ -n "$ZSTD_BIN" ]; then
-    cp "$ZSTD_BIN" "$APP/Contents/Resources/zstd"
+# 编译静态链接的 zstd 解压工具(避免 Homebrew dylib 依赖)
+if [ -f "zstd_decompress.c" ] && [ -f "/opt/homebrew/lib/libzstd.a" ]; then
+    cc -O2 -o "$APP/Contents/Resources/zstd" zstd_decompress.c \
+       -I/opt/homebrew/include /opt/homebrew/lib/libzstd.a -lz 2>/dev/null
+    chmod +x "$APP/Contents/Resources/zstd"
+elif [ -f "/usr/local/lib/libzstd.a" ]; then
+    cc -O2 -o "$APP/Contents/Resources/zstd" zstd_decompress.c \
+       -I/usr/local/include /usr/local/lib/libzstd.a -lz 2>/dev/null
     chmod +x "$APP/Contents/Resources/zstd"
 fi
 

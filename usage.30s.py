@@ -1398,25 +1398,25 @@ def _iso_to_epoch(s):
     return int(dt.timestamp()) if dt else None
 
 
-def _find_zstd():
+def _find_zstd_cmd():
+    """Return (cmd_list_factory, found) where cmd_list_factory(file) -> [args]."""
     import shutil, subprocess
-    p = shutil.which("zstd")
-    if p:
-        return p
-    for candidate in ["/opt/homebrew/bin/zstd", "/usr/local/bin/zstd",
-                      os.path.join(os.path.dirname(os.path.abspath(__file__)), "zstd")]:
-        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
-            subprocess.run(["xattr", "-d", "com.apple.quarantine", candidate],
-                           capture_output=True)
-            return candidate
+    for p in [shutil.which("zstd"), "/opt/homebrew/bin/zstd", "/usr/local/bin/zstd"]:
+        if p and os.path.isfile(p) and os.access(p, os.X_OK):
+            return lambda f, _p=p: [_p, "-dc", f]
+    bundled = os.path.join(os.path.dirname(os.path.abspath(__file__)), "zstd")
+    if os.path.isfile(bundled) and os.access(bundled, os.X_OK):
+        subprocess.run(["xattr", "-d", "com.apple.quarantine", bundled],
+                       capture_output=True)
+        return lambda f: [bundled, f]
     return None
 
 
 def _scan_claude_plan_raw():
     import subprocess
     import tempfile
-    zstd = _find_zstd()
-    if not os.path.isdir(CLAUDE_CACHE) or not zstd:
+    zstd_cmd = _find_zstd_cmd()
+    if not os.path.isdir(CLAUDE_CACHE) or not zstd_cmd:
         return None
     cand = None
     for f in glob.glob(os.path.join(CLAUDE_CACHE, "*_0")):
@@ -1438,7 +1438,7 @@ def _scan_claude_plan_raw():
     try:
         with open(tmp, "wb") as fh:
             fh.write(data[i:])
-        raw = subprocess.run([zstd, "-dc", tmp], capture_output=True).stdout
+        raw = subprocess.run(zstd_cmd(tmp), capture_output=True).stdout
     finally:
         try:
             os.remove(tmp)
