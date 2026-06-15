@@ -296,7 +296,7 @@ struct ProjectTrailView: View {
     func loadData() {
         loading = true
         DispatchQueue.global(qos: .utility).async {
-            let data = DashboardView.runScript("--projects")
+            let data = DashboardView.runScript(["--projects"])
             let list = (try? JSONDecoder().decode([TrailProject].self, from: data)) ?? []
             DispatchQueue.main.async {
                 cached = list

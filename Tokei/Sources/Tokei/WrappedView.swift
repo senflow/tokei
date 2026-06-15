@@ -29,14 +29,31 @@ struct WrappedData: Codable {
     var night_share: Double = 0
     var first_day = ""
     var achievements: [WrappedAchievement] = []
+    var period: String = "all"
+}
+
+enum WrappedPeriod: String, CaseIterable {
+    case day = "1d", week = "7d", month = "30d", year = "365d", all = "all"
+    var label: String {
+        switch self {
+        case .day: return "今日"
+        case .week: return "本周"
+        case .month: return "本月"
+        case .year: return "今年"
+        case .all: return "全部"
+        }
+    }
 }
 
 // Tokei 回顾 —— 作息 / 项目 / 连续 / 成就(Claude 数据)。
 struct WrappedView: View {
     let data: WrappedData
+    @Binding var period: WrappedPeriod
+    var onPeriodChange: (WrappedPeriod) -> Void = { _ in }
     @State private var achievementsExpanded = false
     @State private var funSeed = 0
     @State private var showConfetti = false
+    @State private var loadingPeriod = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -86,8 +103,15 @@ struct WrappedView: View {
                 Text("回顾").font(.system(size: 11, weight: .bold)).tracking(1.5)
                     .foregroundStyle(Theme.tSecondary)
                 Spacer()
+                periodPicker
+            }
+            HStack(spacing: 4) {
                 if !d.first_day.isEmpty {
-                    Text("自 \(d.first_day) · \(d.active_days) 天活跃")
+                    Text(period == .all ? "自 \(d.first_day)" : d.first_day)
+                        .font(.system(size: 9, design: .monospaced)).foregroundStyle(Theme.tTertiary)
+                }
+                if d.active_days > 0 {
+                    Text("· \(d.active_days) 天活跃")
                         .font(.system(size: 9, design: .monospaced)).foregroundStyle(Theme.tTertiary)
                 }
             }
@@ -221,6 +245,34 @@ struct WrappedView: View {
                 }
             }
         }
+    }
+
+    // MARK: - Period picker
+    var periodPicker: some View {
+        HStack(spacing: 0) {
+            ForEach(WrappedPeriod.allCases, id: \.rawValue) { p in
+                Button {
+                    guard p != period else { return }
+                    period = p
+                    loadingPeriod = true
+                    onPeriodChange(p)
+                } label: {
+                    Text(p.label)
+                        .font(.system(size: 9, weight: p == period ? .bold : .medium))
+                        .foregroundStyle(p == period ? .white : Theme.tTertiary)
+                        .padding(.horizontal, 7).padding(.vertical, 3)
+                        .background(
+                            p == period
+                                ? AnyShapeStyle(Theme.claude.gradient)
+                                : AnyShapeStyle(Color.clear)
+                        )
+                        .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(2)
+        .background(Capsule().fill(Color.primary.opacity(0.06)))
     }
 
     // MARK: - helpers

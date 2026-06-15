@@ -1946,6 +1946,22 @@ def update_unknown():
 
 def daily_costs():
     """输出按天+按模型的成本 JSON(从扫描缓存读,无额外 I/O)。"""
+    period = "all"
+    for i, a in enumerate(sys.argv):
+        if a == "--period" and i + 1 < len(sys.argv):
+            period = sys.argv[i + 1]
+            break
+    cutoff = None
+    today = date.today()
+    if period == "1d":
+        cutoff = today.isoformat()
+    elif period == "7d":
+        cutoff = (today - timedelta(days=6)).isoformat()
+    elif period == "30d":
+        cutoff = (today - timedelta(days=29)).isoformat()
+    elif period == "365d":
+        cutoff = today.replace(month=1, day=1).isoformat()
+
     cache = _load_scan_cache()
     days = {}
     models = {}
@@ -1958,6 +1974,8 @@ def daily_costs():
 
     for fp, entry in cache.get("claude", {}).items():
         for dk, day in entry.get("days", {}).items():
+            if cutoff and dk < cutoff:
+                continue
             d = days.setdefault(dk, _empty())
             d["claude"] += day.get("cost", 0)
             d["c_in"] += day.get("in", 0); d["c_out"] += day.get("out", 0)
@@ -1973,15 +1991,18 @@ def daily_costs():
 
     for fp, entry in cache.get("codex", {}).items():
         for dk, day in entry.get("days", {}).items():
+            if cutoff and dk < cutoff:
+                continue
             d = days.setdefault(dk, _empty())
             d["codex"] += day.get("cost", 0)
             d["x_in"] += day.get("in", 0); d["x_out"] += day.get("out", 0)
             d["x_cached"] += day.get("cached", 0); d["x_reason"] += day.get("reason", 0)
-            # Codex 的 in 已含 cached、out 已含 reason,总量 = in + out
             d["tokens"] += day.get("in", 0) + day.get("out", 0)
 
     for fp, entry in cache.get("pi", {}).items():
         for dk, day in entry.get("days", {}).items():
+            if cutoff and dk < cutoff:
+                continue
             d = days.setdefault(dk, _empty())
             d["pi"] += day.get("cost", 0)
             d["p_in"] += day.get("in", 0); d["p_out"] += day.get("out", 0)
@@ -2002,6 +2023,8 @@ def daily_costs():
         dk = day_data.get("date")
         if not dk:
             continue
+        if cutoff and dk < cutoff:
+            continue
         d = days.setdefault(dk, _empty())
         d["opencode"] += day_data.get("cost", 0)
         d["tokens"] += token_total(day_data)
@@ -2014,11 +2037,15 @@ def daily_costs():
 
     for fp, entry in cache.get("hermes", {}).items():
         for dk, day in entry.get("days", {}).items():
+            if cutoff and dk < cutoff:
+                continue
             d = days.setdefault(dk, _empty())
             d["tokens"] += token_total(day)
 
     for fp, entry in cache.get("qoder", {}).items():
         for dk, day in entry.get("days", {}).items():
+            if cutoff and dk < cutoff:
+                continue
             d = days.setdefault(dk, _empty())
             d["tokens"] += day.get("in", 0) + day.get("out", 0)
 
@@ -2079,6 +2106,22 @@ def _streak_info(dates):
 
 def wrapped():
     """Tokei 回顾:作息 / 项目 / 连续 / 成就。汇总全部工具,不联网。"""
+    period = "all"
+    for i, a in enumerate(sys.argv):
+        if a == "--period" and i + 1 < len(sys.argv):
+            period = sys.argv[i + 1]
+            break
+    cutoff = None
+    today = date.today()
+    if period == "1d":
+        cutoff = today.isoformat()
+    elif period == "7d":
+        cutoff = (today - timedelta(days=6)).isoformat()
+    elif period == "30d":
+        cutoff = (today - timedelta(days=29)).isoformat()
+    elif period == "365d":
+        cutoff = (today.replace(month=1, day=1)).isoformat()
+
     cache = _load_scan_cache()
     if not cache.get("claude"):
         compute()
@@ -2105,6 +2148,8 @@ def wrapped():
         proj_path = entry.get("proj") or ""
         proj = os.path.basename(proj_path.rstrip("/")) or "?"
         for dk, day in entry.get("days", {}).items():
+            if cutoff and dk < cutoff:
+                continue
             tok = token_total(day)
             day_tokens[dk] = day_tokens.get(dk, 0) + tok
             total_tokens += tok
@@ -2122,6 +2167,8 @@ def wrapped():
         if not isinstance(entry, dict):
             continue
         for dk, day in entry.get("days", {}).items():
+            if cutoff and dk < cutoff:
+                continue
             tok = day.get("in", 0) + day.get("out", 0)
             day_tokens[dk] = day_tokens.get(dk, 0) + tok
             total_tokens += tok
@@ -2133,6 +2180,8 @@ def wrapped():
         if not isinstance(entry, dict):
             continue
         for dk, day in entry.get("days", {}).items():
+            if cutoff and dk < cutoff:
+                continue
             tok = token_total(day)
             day_tokens[dk] = day_tokens.get(dk, 0) + tok
             total_tokens += tok
@@ -2144,6 +2193,8 @@ def wrapped():
         if not isinstance(entry, dict):
             continue
         for dk, day in entry.get("days", {}).items():
+            if cutoff and dk < cutoff:
+                continue
             tok = token_total(day)
             day_tokens[dk] = day_tokens.get(dk, 0) + tok
             total_tokens += tok
@@ -2155,6 +2206,8 @@ def wrapped():
         if not isinstance(entry, dict):
             continue
         for dk, day in entry.get("days", {}).items():
+            if cutoff and dk < cutoff:
+                continue
             tok = token_total(day)
             day_tokens[dk] = day_tokens.get(dk, 0) + tok
             total_tokens += tok
@@ -2166,6 +2219,8 @@ def wrapped():
         if not isinstance(entry, dict):
             continue
         for dk, day in entry.get("days", {}).items():
+            if cutoff and dk < cutoff:
+                continue
             tok = token_total(day)
             day_tokens[dk] = day_tokens.get(dk, 0) + tok
             total_tokens += tok
@@ -2180,29 +2235,33 @@ def wrapped():
         if not isinstance(entry, dict):
             continue
         for dk, day in entry.get("days", {}).items():
+            if cutoff and dk < cutoff:
+                continue
             tok = day.get("in", 0) + day.get("out", 0)
             day_tokens[dk] = day_tokens.get(dk, 0) + tok
             total_tokens += tok
             weekday[date.fromisoformat(dk).weekday()] += tok
 
-    # --- Gemini (无缓存,需重新扫描取 year 总量) ---
-    try:
-        bounds = range_bounds()
-        gm = scan_gemini(bounds)
-        yr = gm["ranges"].get("year", {})
-        gm_tok = yr.get("in", 0) + yr.get("out", 0) + yr.get("cached", 0) + yr.get("thoughts", 0)
-        total_tokens += gm_tok
-        total_cost += yr.get("cost", 0)
-    except Exception:
-        pass
+    # --- Gemini (无缓存,需重新扫描取 year 总量;仅 all/365d 包含) ---
+    if period in ("all", "365d"):
+        try:
+            bounds = range_bounds()
+            gm = scan_gemini(bounds)
+            yr = gm["ranges"].get("year", {})
+            gm_tok = yr.get("in", 0) + yr.get("out", 0) + yr.get("cached", 0) + yr.get("thoughts", 0)
+            total_tokens += gm_tok
+            total_cost += yr.get("cost", 0)
+        except Exception:
+            pass
 
-    # --- Grok (无缓存,需重新扫描取 year 总量) ---
-    try:
-        gk = scan_grok(bounds)
-        gk_tok = gk["ranges"].get("year", {}).get("tokens", 0)
-        total_tokens += gk_tok
-    except Exception:
-        pass
+    # --- Grok (无缓存,需重新扫描取 year 总量;仅 all/365d 包含) ---
+    if period in ("all", "365d"):
+        try:
+            gk = scan_grok(bounds if period == "all" else range_bounds())
+            gk_tok = gk["ranges"].get("year", {}).get("tokens", 0)
+            total_tokens += gk_tok
+        except Exception:
+            pass
 
     active = sorted(day_tokens.keys())
     streak_max, streak_cur = _streak_info(active)
@@ -2224,13 +2283,13 @@ def wrapped():
 
     # Token 里程碑(金,取最高档)
     if total_tokens >= 1_000_000_000_000:
-        add("crown.fill", "万亿俱乐部", f"{total_tokens/1e12:.2f} 万亿 token", "gold")
+        add("crown.fill", "万亿先生", f"{total_tokens/1e12:.2f} 万亿 token", "gold")
     elif total_tokens >= 100_000_000_000:
-        add("hexagon.fill", "千亿俱乐部", f"{total_tokens/1e8:.0f} 亿 token", "gold")
+        add("hexagon.fill", "千亿先生", f"{total_tokens/1e8:.0f} 亿 token", "gold")
     elif total_tokens >= 10_000_000_000:
-        add("diamond.fill", "百亿俱乐部", f"{total_tokens/1e8:.0f} 亿 token", "gold")
+        add("diamond.fill", "百亿先生", f"{total_tokens/1e8:.0f} 亿 token", "gold")
     elif total_tokens >= 1_000_000_000:
-        add("diamond", "十亿俱乐部", f"{total_tokens/1e8:.1f} 亿 token", "gold")
+        add("diamond", "十亿先生", f"{total_tokens/1e8:.1f} 亿 token", "gold")
 
     # 成本里程碑(绿,取最高档)
     if total_cost >= 100000:
@@ -2265,6 +2324,9 @@ def wrapped():
         add("rectangle.3.group.fill", "广撒网", f"{len(proj_tok)} 个项目", "blue")
 
     # 作息彩蛋(紫)
+    active_hours = sum(1 for h in hours if h > 0)
+    if active_hours >= 24:
+        add("clock.badge.checkmark.fill", "永动机", "24h 每个时段都有活跃", "purple")
     if night_share >= 5:
         add("moon.stars.fill", "夜猫子", f"{night_share:.0f}% 在凌晨", "purple")
     morning_share = (sum(hours[5:9]) / hours_total * 100) if hours_total else 0
@@ -2292,8 +2354,9 @@ def wrapped():
         "projects": projects,
         "max_projs_day": max_projs_day,
         "night_share": night_share,
-        "first_day": active[0] if active else "",
+        "first_day": cutoff if cutoff else (active[0] if active else ""),
         "achievements": ach,
+        "period": period,
     }, ensure_ascii=False))
 
 

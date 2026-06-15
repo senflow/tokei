@@ -48,6 +48,7 @@ struct DashboardView: View {
     @State private var models: [ModelCost] = []
     @State private var wrapped: WrappedData? = nil
     @State private var loading = true
+    @State private var wrappedPeriod: WrappedPeriod = .all
     @AppStorage("hideProjects") private var hideProjects = false
 
     var body: some View {
@@ -56,7 +57,9 @@ struct DashboardView: View {
                 HStack { Spacer(); ProgressView().controlSize(.small); Spacer() }
                     .frame(height: 200)
             } else {
-                if let w = wrapped, w.total_tokens > 0 { WrappedView(data: w) }
+                if let w = wrapped, w.total_tokens > 0 {
+                    WrappedView(data: w, period: $wrappedPeriod) { p in loadWrapped(p) }
+                }
                 if !daily.isEmpty {
                     Divider().opacity(0.15)
                     modelSection
@@ -380,8 +383,8 @@ struct DashboardView: View {
     func loadData() {
         loading = true
         DispatchQueue.global(qos: .utility).async {
-            let dd = try? JSONDecoder().decode(DashboardData.self, from: Self.runScript("--daily-costs"))
-            let wd = try? JSONDecoder().decode(WrappedData.self, from: Self.runScript("--wrapped"))
+            let dd = try? JSONDecoder().decode(DashboardData.self, from: Self.runScript(["--daily-costs"]))
+            let wd = try? JSONDecoder().decode(WrappedData.self, from: Self.runScript(["--wrapped", "--period", wrappedPeriod.rawValue]))
             DispatchQueue.main.async {
                 daily = dd?.daily ?? []
                 models = dd?.models ?? []
@@ -391,10 +394,22 @@ struct DashboardView: View {
         }
     }
 
-    static func runScript(_ arg: String) -> Data {
+    func loadWrapped(_ period: WrappedPeriod) {
+        DispatchQueue.global(qos: .utility).async {
+            let periodArgs = ["--period", period.rawValue]
+            let wd = try? JSONDecoder().decode(WrappedData.self, from: Self.runScript(["--wrapped"] + periodArgs))
+            let dd = try? JSONDecoder().decode(DashboardData.self, from: Self.runScript(["--daily-costs"] + periodArgs))
+            DispatchQueue.main.async {
+                wrapped = wd
+                if let dd { daily = dd.daily; models = dd.models }
+            }
+        }
+    }
+
+    static func runScript(_ args: [String]) -> Data {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        proc.arguments = ["python3", DataLoader.scriptPath, arg]
+        proc.arguments = ["python3", DataLoader.scriptPath] + args
         let pipe = Pipe()
         proc.standardOutput = pipe
         proc.standardError = Pipe()

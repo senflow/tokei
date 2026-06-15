@@ -250,12 +250,32 @@ struct PanelView: View {
                 if !claudeRows.isEmpty {
                     modelDisclosure(claudeRows, open: $claudeModelsOpen, tint: Theme.claude)
                 }
-                if c.q5 != nil || c.q7 != nil { thinDivider }
-                if let q5 = c.q5 {
-                    quotaRow(title: "5h 剩余", pct: 100 - q5, reset: c.q5_reset, tint: Theme.claude)
-                }
-                if let q7 = c.q7 {
-                    quotaRow(title: "周剩余", pct: 100 - q7, reset: c.q7_reset, tint: Theme.claude)
+                if c.q5 != nil || c.q7 != nil {
+                    thinDivider
+                    if let q5 = c.q5 {
+                        quotaRow(title: "5h 剩余", pct: 100 - q5, reset: c.q5_reset, tint: Theme.claude)
+                    }
+                    if let q7 = c.q7 {
+                        quotaRow(title: "周剩余", pct: 100 - q7, reset: c.q7_reset, tint: Theme.claude)
+                    }
+                } else if r.sessions > 0 {
+                    thinDivider
+                    Button {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString("brew install zstd", forType: .string)
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "info.circle")
+                                .font(.system(size: 8))
+                            Text("额度条需要 Claude Desktop 或 zstd：brew install zstd")
+                                .font(.system(size: 8))
+                            Image(systemName: "doc.on.doc")
+                                .font(.system(size: 7))
+                        }
+                        .foregroundStyle(Theme.tTertiary.opacity(0.6))
+                    }
+                    .buttonStyle(.plain)
+                    .tip("点击复制安装命令")
                 }
             } else {
                 emptyHint
