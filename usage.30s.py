@@ -1399,16 +1399,11 @@ def _iso_to_epoch(s):
 
 
 def _find_zstd_cmd():
-    """Return (cmd_list_factory, found) where cmd_list_factory(file) -> [args]."""
-    import shutil, subprocess
+    """Return cmd factory or None. Bundled zstd no longer needed — Swift side handles decompression."""
+    import shutil
     for p in [shutil.which("zstd"), "/opt/homebrew/bin/zstd", "/usr/local/bin/zstd"]:
         if p and os.path.isfile(p) and os.access(p, os.X_OK):
             return lambda f, _p=p: [_p, "-dc", f]
-    bundled = os.path.join(os.path.dirname(os.path.abspath(__file__)), "zstd")
-    if os.path.isfile(bundled) and os.access(bundled, os.X_OK):
-        subprocess.run(["xattr", "-d", "com.apple.quarantine", bundled],
-                       capture_output=True)
-        return lambda f: [bundled, f]
     return None
 
 

@@ -23,17 +23,6 @@ cp "$PROJ_DIR/usage.30s.py" "$APP/Contents/Resources/"
 [ -d "Sources/Tokei/Resources/sit" ] && cp -R "Sources/Tokei/Resources/sit" "$APP/Contents/Resources/"
 [ -f "Sources/Tokei/Resources/github-mark.png" ] && cp "Sources/Tokei/Resources/github-mark.png" "$APP/Contents/Resources/"
 
-# 编译静态链接的 zstd 解压工具(避免 Homebrew dylib 依赖)
-if [ -f "zstd_decompress.c" ] && [ -f "/opt/homebrew/lib/libzstd.a" ]; then
-    cc -O2 -o "$APP/Contents/Resources/zstd" zstd_decompress.c \
-       -I/opt/homebrew/include /opt/homebrew/lib/libzstd.a -lz 2>/dev/null
-    chmod +x "$APP/Contents/Resources/zstd"
-elif [ -f "/usr/local/lib/libzstd.a" ]; then
-    cc -O2 -o "$APP/Contents/Resources/zstd" zstd_decompress.c \
-       -I/usr/local/include /usr/local/lib/libzstd.a -lz 2>/dev/null
-    chmod +x "$APP/Contents/Resources/zstd"
-fi
-
 # Info.plist
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>

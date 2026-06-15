@@ -1,4 +1,5 @@
 import Foundation
+import CZstd
 
 final class DataLoader {
     struct ScriptResult {
@@ -24,27 +25,75 @@ final class DataLoader {
     private static func syncToUserDir(from resourceDir: String) {
         let dest = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".tokei")
         try? FileManager.default.createDirectory(at: dest, withIntermediateDirectories: true)
-        for name in ["usage.30s.py", "pricing.json", "pricing_overrides.json", "zstd"] {
+        for name in ["usage.30s.py", "pricing.json", "pricing_overrides.json"] {
             let src = (resourceDir as NSString).appendingPathComponent(name)
             let dst = dest.appendingPathComponent(name).path
             guard FileManager.default.fileExists(atPath: src) else { continue }
-            if name == "usage.30s.py" || name == "zstd" {
+            if name == "usage.30s.py" {
                 try? FileManager.default.removeItem(atPath: dst)
                 try? FileManager.default.copyItem(atPath: src, toPath: dst)
-                if name == "zstd" {
-                    try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dst)
-                    try? (URL(fileURLWithPath: dst) as NSURL).setResourceValue(nil, forKey: .quarantinePropertiesKey)
-                    let p = Process()
-                    p.executableURL = URL(fileURLWithPath: "/usr/bin/xattr")
-                    p.arguments = ["-d", "com.apple.quarantine", dst]
-                    p.standardOutput = FileHandle.nullDevice
-                    p.standardError = FileHandle.nullDevice
-                    try? p.run(); p.waitUntilExit()
-                }
             } else if !FileManager.default.fileExists(atPath: dst) {
                 try? FileManager.default.copyItem(atPath: src, toPath: dst)
             }
         }
+    }
+
+    static func scanClaudeQuota() -> [String: Any]? {
+        let cacheDir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Claude/Cache/Cache_Data").path
+        guard FileManager.default.fileExists(atPath: cacheDir) else { return nil }
+        let zstdMagic: [UInt8] = [0x28, 0xb5, 0x2f, 0xfd]
+        var best: (Date, Data)?
+        let fm = FileManager.default
+        guard let files = try? fm.contentsOfDirectory(atPath: cacheDir) else { return nil }
+        for name in files where name.hasSuffix("_0") {
+            let path = (cacheDir as NSString).appendingPathComponent(name)
+            guard let data = fm.contents(atPath: path) else { continue }
+            let needle1 = "organizations/".data(using: .utf8)!
+            let needle2 = "/usage".data(using: .utf8)!
+            guard data.range(of: needle1) != nil,
+                  data.range(of: needle2) != nil,
+                  data.range(of: Data(zstdMagic)) != nil else { continue }
+            let mt = (try? fm.attributesOfItem(atPath: path)[.modificationDate] as? Date) ?? .distantPast
+            if best == nil || mt > best!.0 { best = (mt, data) }
+        }
+        guard let (_, raw) = best else { return nil }
+        guard let magicRange = raw.range(of: Data(zstdMagic)) else { return nil }
+        let compressed = raw[magicRange.lowerBound...]
+        guard let decompressed = zstdDecompress(Data(compressed)) else { return nil }
+        guard let json = try? JSONSerialization.jsonObject(with: decompressed) as? [String: Any] else { return nil }
+        let fh = json["five_hour"] as? [String: Any] ?? [:]
+        let sd = json["seven_day"] as? [String: Any] ?? [:]
+        var result: [String: Any] = [:]
+        result["q5"] = fh["utilization"]
+        result["q5_reset"] = isoToEpoch(fh["resets_at"] as? String)
+        result["q7"] = sd["utilization"]
+        result["q7_reset"] = isoToEpoch(sd["resets_at"] as? String)
+        return result
+    }
+
+    private static func zstdDecompress(_ src: Data) -> Data? {
+        let srcSize = src.count
+        let bound = ZSTD_getFrameContentSize(Array(src), srcSize)
+        let dstSize = (bound == ZSTD_CONTENTSIZE_ERROR || bound == ZSTD_CONTENTSIZE_UNKNOWN)
+            ? srcSize * 10
+            : Int(bound)
+        var dst = [UInt8](repeating: 0, count: dstSize)
+        let ret = src.withUnsafeBytes { srcPtr -> Int in
+            ZSTD_decompress(&dst, dstSize, srcPtr.baseAddress, srcSize)
+        }
+        guard ZSTD_isError(ret) == 0 else { return nil }
+        return Data(dst.prefix(ret))
+    }
+
+    private static func isoToEpoch(_ s: String?) -> Int? {
+        guard let s = s else { return nil }
+        let fmt = ISO8601DateFormatter()
+        fmt.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let d = fmt.date(from: s) { return Int(d.timeIntervalSince1970) }
+        fmt.formatOptions = [.withInternetDateTime]
+        if let d = fmt.date(from: s) { return Int(d.timeIntervalSince1970) }
+        return nil
     }
 
     static func loadSync() -> Usage? { runScript() }
@@ -66,6 +115,13 @@ final class DataLoader {
         do {
             guard var raw = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
             for key in raw.keys where key.hasPrefix("_") { raw.removeValue(forKey: key) }
+            if var claude = raw["claude"] as? [String: Any],
+               claude["q5"] == nil || (claude["q5"] as? Double) == nil {
+                if let quota = scanClaudeQuota() {
+                    for (k, v) in quota { claude[k] = v }
+                    raw["claude"] = claude
+                }
+            }
             let cleaned = try JSONSerialization.data(withJSONObject: raw)
             return try JSONDecoder().decode(Usage.self, from: cleaned)
         } catch {
