@@ -1149,7 +1149,7 @@ struct PanelView: View {
                     Text("设置")
                         .font(.system(size: 15, weight: .bold, design: .rounded))
                         .foregroundStyle(Theme.tPrimary)
-                    Text("v\(Self.buildVersion)")
+                    Text("\(Updater.releaseTag) · \(Self.buildVersion)")
                         .font(.system(size: 8, design: .monospaced))
                         .foregroundStyle(Theme.tTertiary.opacity(0.6))
                 }
