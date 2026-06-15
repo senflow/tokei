@@ -93,6 +93,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             self?.store.refresh()
         }
+        Timer.scheduledTimer(withTimeInterval: 24 * 3600, repeats: true) { _ in
+            Updater.shared.checkForUpdate()
+        }
 
         globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
             guard let self = self, self.popover.isShown else { return }
@@ -222,7 +225,7 @@ enum Shot {
     }
 }
 
-// 品牌 Logo(用于 app icon / 通知图标):珊瑚渐变 squircle + 白色时计符号。
+// 品牌 Logo(用于 app icon / 通知图标):珊瑚渐变 squircle + 白色知度符号。
 struct LogoView: View {
     var body: some View {
         ZStack {

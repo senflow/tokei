@@ -1398,13 +1398,24 @@ def _iso_to_epoch(s):
     return int(dt.timestamp()) if dt else None
 
 
-def _scan_claude_plan_raw():
+def _find_zstd():
     import shutil
+    p = shutil.which("zstd")
+    if p:
+        return p
+    for candidate in ["/opt/homebrew/bin/zstd", "/usr/local/bin/zstd",
+                      os.path.join(os.path.dirname(os.path.abspath(__file__)), "zstd")]:
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
+def _scan_claude_plan_raw():
     import subprocess
     import tempfile
-    if not os.path.isdir(CLAUDE_CACHE) or not shutil.which("zstd"):
+    zstd = _find_zstd()
+    if not os.path.isdir(CLAUDE_CACHE) or not zstd:
         return None
-    # 找到缓存了 organizations/<org>/usage 的文件(文件名是 hash,按内容定位)
     cand = None
     for f in glob.glob(os.path.join(CLAUDE_CACHE, "*_0")):
         try:
@@ -1425,7 +1436,7 @@ def _scan_claude_plan_raw():
     try:
         with open(tmp, "wb") as fh:
             fh.write(data[i:])
-        raw = subprocess.run(["zstd", "-dc", tmp], capture_output=True).stdout
+        raw = subprocess.run([zstd, "-dc", tmp], capture_output=True).stdout
     finally:
         try:
             os.remove(tmp)

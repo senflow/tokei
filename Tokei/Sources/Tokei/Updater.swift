@@ -15,13 +15,15 @@ final class Updater: NSObject, ObservableObject, URLSessionDownloadDelegate {
         }
     }
 
-    static let releaseTag = "v1.0.2"
+    static let releaseTag = "v1.0.3"
     @Published var state: State = .idle
 
     private let apiURL = URL(string: "https://api.github.com/repos/cclank/tokei/releases/latest")!
     private var downloadTask: URLSessionDownloadTask?
     private lazy var session: URLSession = {
-        URLSession(configuration: .default, delegate: self, delegateQueue: .main)
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForResource = 300
+        return URLSession(configuration: config, delegate: self, delegateQueue: .main)
     }()
 
     static let shared = Updater()
@@ -109,6 +111,9 @@ final class Updater: NSObject, ObservableObject, URLSessionDownloadDelegate {
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         if let error = error {
             state = .failed(error.localizedDescription)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+                if case .failed = self?.state { self?.state = .idle }
+            }
         }
     }
 

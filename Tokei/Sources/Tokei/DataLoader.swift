@@ -24,13 +24,18 @@ final class DataLoader {
     private static func syncToUserDir(from resourceDir: String) {
         let dest = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".tokei")
         try? FileManager.default.createDirectory(at: dest, withIntermediateDirectories: true)
-        for name in ["usage.30s.py", "pricing.json", "pricing_overrides.json"] {
+        for name in ["usage.30s.py", "pricing.json", "pricing_overrides.json", "zstd"] {
             let src = (resourceDir as NSString).appendingPathComponent(name)
             let dst = dest.appendingPathComponent(name).path
             guard FileManager.default.fileExists(atPath: src) else { continue }
-            if name == "usage.30s.py" {
+            if name == "usage.30s.py" || name == "zstd" {
                 try? FileManager.default.removeItem(atPath: dst)
                 try? FileManager.default.copyItem(atPath: src, toPath: dst)
+                if name == "zstd" {
+                    try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dst)
+                    let u = URL(fileURLWithPath: dst)
+                    try? (u as NSURL).setResourceValue(nil, forKey: .quarantinePropertiesKey)
+                }
             } else if !FileManager.default.fileExists(atPath: dst) {
                 try? FileManager.default.copyItem(atPath: src, toPath: dst)
             }

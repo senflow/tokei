@@ -7,7 +7,7 @@
   <a href="https://github.com/cclank/tokei/releases"><img src="https://img.shields.io/github/v/release/cclank/tokei?style=flat-square&color=blue" alt="Release"></a>
 </p>
 
-<h1 align="center">⏱ Tokei 時計</h1>
+<h1 align="center">⏱ Tokei 知度</h1>
 
 <p align="center">
   <strong>macOS 菜单栏 AI 编程用量监控</strong><br>
@@ -148,6 +148,13 @@ echo '{"sync_dir":"~/.tokei/sync","device_id":"'$(hostname -s)'"}' > ~/.tokei/co
 > CodexBar 在提供商覆盖和配额可见性上表现出色。Tokei 更深入——Token 级分析、成本趋势、项目维度拆分、跨设备同步——全部无需登录。
 
 ## 更新日志
+
+### v1.0.3
+- feat: 主页顶部动态升级按钮，有新版本自动显示，一键升级
+- feat: 24 小时自动检查更新
+- feat: 品牌升级「時計」→「知度」(Token + Insight = Tokei)
+- fix: Claude Desktop 配额条不显示（zstd 路径发现 + 二进制打包）
+- fix: 下载超时保护（5 分钟）+ 失败自动恢复
 
 ### v1.0.2
 - feat: 久坐提醒语音播报

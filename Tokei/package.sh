@@ -23,6 +23,13 @@ cp "$PROJ_DIR/usage.30s.py" "$APP/Contents/Resources/"
 [ -d "Sources/Tokei/Resources/sit" ] && cp -R "Sources/Tokei/Resources/sit" "$APP/Contents/Resources/"
 [ -f "Sources/Tokei/Resources/github-mark.png" ] && cp "Sources/Tokei/Resources/github-mark.png" "$APP/Contents/Resources/"
 
+# 打包 zstd 二进制(用于解压 Claude Desktop 缓存中的配额数据)
+ZSTD_BIN="$(command -v zstd 2>/dev/null)"
+if [ -n "$ZSTD_BIN" ]; then
+    cp "$ZSTD_BIN" "$APP/Contents/Resources/zstd"
+    chmod +x "$APP/Contents/Resources/zstd"
+fi
+
 # Info.plist
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>

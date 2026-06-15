@@ -132,7 +132,7 @@ struct PanelView: View {
                         Text("Tokei")
                             .font(.system(size: 15, weight: .bold, design: .rounded))
                             .tracking(0.5)
-                        Text("时计 · AI 用量")
+                        Text("知度 · AI 用量")
                             .font(.system(size: 9))
                             .foregroundStyle(Theme.tTertiary)
                     }
@@ -141,6 +141,7 @@ struct PanelView: View {
             }
             .buttonStyle(.plain)
             .tip("主页")
+            updatePill
             Spacer()
             Text(store.lastUpdated)
                 .font(.system(size: 9.5, design: .monospaced))
@@ -711,6 +712,75 @@ struct PanelView: View {
         }
     }
 
+    @State private var updateSpin = false
+
+    @ViewBuilder
+    private var updatePill: some View {
+        switch updater.state {
+        case .available(let tag, _):
+            Button { updater.performUpdate() } label: {
+                ZStack {
+                    Circle()
+                        .strokeBorder(
+                            AngularGradient(colors: [.cyan, .blue, .purple, .cyan],
+                                           center: .center),
+                            lineWidth: 2
+                        )
+                        .frame(width: 26, height: 26)
+                        .rotationEffect(.degrees(updateSpin ? 360 : 0))
+                        .onAppear {
+                            withAnimation(.linear(duration: 2.5).repeatForever(autoreverses: false)) {
+                                updateSpin = true
+                            }
+                        }
+                    Image(systemName: "arrow.down")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(.white)
+                }
+            }
+            .buttonStyle(.plain)
+            .tip("升级 \(tag)")
+        case .downloading(let p):
+            ZStack {
+                Circle()
+                    .stroke(Color.primary.opacity(0.1), lineWidth: 2)
+                    .frame(width: 26, height: 26)
+                Circle()
+                    .trim(from: 0, to: p)
+                    .stroke(Color.cyan, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                    .frame(width: 26, height: 26)
+                    .rotationEffect(.degrees(-90))
+                Text("\(Int(p * 100))")
+                    .font(.system(size: 7, weight: .bold, design: .monospaced))
+                    .foregroundStyle(Theme.tSecondary)
+            }
+        case .installing:
+            ZStack {
+                Circle()
+                    .strokeBorder(
+                        AngularGradient(colors: [.clear, Theme.claude], center: .center),
+                        lineWidth: 2
+                    )
+                    .frame(width: 26, height: 26)
+                    .rotationEffect(.degrees(updateSpin ? 360 : 0))
+                Image(systemName: "square.and.arrow.down")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(Theme.claude)
+            }
+        case .failed:
+            Button { updater.checkForUpdate() } label: {
+                Image(systemName: "exclamationmark.circle")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.red)
+                    .frame(width: 26, height: 26)
+            }
+            .buttonStyle(.plain)
+            .tip("重试")
+        default:
+            EmptyView()
+        }
+    }
+
     @ObservedObject private var updater = Updater.shared
     @State private var priceUpdating = false
     @State private var priceResult = ""
@@ -1082,7 +1152,6 @@ struct PanelView: View {
                     Text("v\(Self.buildVersion)")
                         .font(.system(size: 8, design: .monospaced))
                         .foregroundStyle(Theme.tTertiary.opacity(0.6))
-                    updateBadge
                 }
                 Text("显示、同步和诊断")
                     .font(.system(size: 9.5))
@@ -1112,60 +1181,6 @@ struct PanelView: View {
             .tip("关闭设置")
         }
         .padding(.bottom, 2)
-    }
-
-    @ViewBuilder
-    private var updateBadge: some View {
-        switch updater.state {
-        case .checking:
-            ProgressView()
-                .controlSize(.mini)
-        case .available(let tag, _):
-            Button {
-                updater.performUpdate()
-            } label: {
-                Text("\(tag) 可更新")
-                    .font(.system(size: 8, weight: .medium))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 2)
-                    .background(Capsule().fill(.green))
-            }
-            .buttonStyle(.plain)
-        case .downloading(let p):
-            HStack(spacing: 4) {
-                ProgressView(value: p)
-                    .frame(width: 40)
-                Text("\(Int(p * 100))%")
-                    .font(.system(size: 8, design: .monospaced))
-                    .foregroundStyle(Theme.tTertiary)
-            }
-        case .installing:
-            Text("安装中…")
-                .font(.system(size: 8))
-                .foregroundStyle(Theme.claude)
-        case .failed(let msg):
-            Text(msg)
-                .font(.system(size: 8))
-                .foregroundStyle(.red)
-                .lineLimit(1)
-        case .upToDate:
-            Text("已是最新")
-                .font(.system(size: 8, weight: .medium))
-                .foregroundStyle(.green)
-        case .idle:
-            Button {
-                updater.checkForUpdate()
-            } label: {
-                Text("检查更新")
-                    .font(.system(size: 8, weight: .medium))
-                    .foregroundStyle(Theme.tTertiary)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 2)
-                    .background(Capsule().fill(Color.primary.opacity(0.06)))
-            }
-            .buttonStyle(.plain)
-        }
     }
 
     func settingsSection<C: View>(_ icon: String, _ title: String, @ViewBuilder content: () -> C) -> some View {
@@ -1352,7 +1367,7 @@ struct PanelView: View {
         return lines.joined(separator: "\n")
     }
 
-    static let buildVersion = "2026.0612"
+    static let buildVersion = "2026.0615"
 
     static var skillPath: String {
         return "https://raw.githubusercontent.com/cclank/tokei/main/skills/tokei-setup.md"
