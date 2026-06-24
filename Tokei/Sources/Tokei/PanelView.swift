@@ -23,13 +23,14 @@ struct PanelView: View {
     @AppStorage("showGemini") private var showGemini = true
     @AppStorage("showGrok") private var showGrok = true
     @AppStorage("showQoder") private var showQoder = true
+    @AppStorage("showQoderCli") private var showQoderCli = true
     @AppStorage("showHermes") private var showHermes = true
     @AppStorage("showOpenClaw") private var showOpenClaw = true
     @AppStorage("showPi") private var showPi = true
     @AppStorage("showOpenCode") private var showOpenCode = true
 
     private var visibleCount: Int {
-        [showClaude, showCodex, showGemini, showGrok, showQoder, showHermes, showOpenClaw, showPi, showOpenCode].filter { $0 }.count
+        [showClaude, showCodex, showGemini, showGrok, showQoderCli, showQoder, showHermes, showOpenClaw, showPi, showOpenCode].filter { $0 }.count
     }
     private var useWide: Bool { visibleCount > 2 }
     private var panelWidth: CGFloat { useWide ? 640 : Theme.panelWidth }
@@ -188,7 +189,7 @@ struct PanelView: View {
     private func toolCards(for u: Usage) -> [ToolCardItem] {
         let cr = u.claude.ranges.get(sel), xr = u.codex.ranges.get(sel)
         let gr = u.gemini.ranges.get(sel), kr = u.grok.ranges.get(sel)
-        let qr = u.qoder.ranges.get(sel), hr = u.hermes.ranges.get(sel)
+        let qclir = u.qoder.ranges.get(sel), qwr = u.qoderwork.ranges.get(sel), hr = u.hermes.ranges.get(sel)
         let lr = u.openclaw.ranges.get(sel), pr = u.pi.ranges.get(sel), or = u.opencode.ranges.get(sel)
         return [
             ToolCardItem(id: "claude", name: "Claude", visible: showClaude, active: cr.sessions > 0,
@@ -199,8 +200,10 @@ struct PanelView: View {
                          tint: Theme.gemini, content: AnyView(geminiBlock(gr))),
             ToolCardItem(id: "grok", name: "Grok", visible: showGrok, active: kr.sessions > 0,
                          tint: Theme.grok, content: AnyView(grokBlock(kr, model: u.grok.model))),
-            ToolCardItem(id: "qoder", name: "Qoder", visible: showQoder, active: qr.calls > 0,
-                         tint: Theme.qoder, content: AnyView(qoderBlock(u.qoder, qr))),
+            ToolCardItem(id: "qoder", name: "Qoder", visible: showQoderCli, active: qclir.sessions > 0,
+                         tint: Theme.qodercli, content: AnyView(tokenUsageBlock(title: "Qoder", qclir, tint: Theme.qodercli))),
+            ToolCardItem(id: "qoderwork", name: "QoderWork", visible: showQoder, active: qwr.calls > 0,
+                         tint: Theme.qoder, content: AnyView(qoderBlock(u.qoderwork, qwr))),
             ToolCardItem(id: "hermes", name: "Hermes", visible: showHermes, active: hr.sessions > 0,
                          tint: Theme.hermes, content: AnyView(hermesBlock(hr))),
             ToolCardItem(id: "openclaw", name: "OpenClaw", visible: showOpenClaw, active: lr.tasks > 0 || lr.in + lr.out > 0,
@@ -387,7 +390,7 @@ struct PanelView: View {
     @ViewBuilder
     func qoderBlock(_ q: QoderStat, _ r: QoderRange) -> some View {
         VStack(alignment: .leading, spacing: 11) {
-            cardHeadPlain("Qoder", tint: Theme.qoder)
+            cardHeadPlain("QoderWork", tint: Theme.qoder)
             if r.calls > 0 {
                 metricGrid({
                     var items: [Metric] = [
@@ -855,7 +858,8 @@ struct PanelView: View {
                 settingsRow("Codex", tint: Theme.codex, isOn: $showCodex)
                 settingsRow("Gemini", tint: Theme.gemini, isOn: $showGemini)
                 settingsRow("Grok", tint: Theme.grok, isOn: $showGrok)
-                settingsRow("Qoder", tint: Theme.qoder, isOn: $showQoder)
+                settingsRow("Qoder", tint: Theme.qodercli, isOn: $showQoderCli)
+                settingsRow("QoderWork", tint: Theme.qoder, isOn: $showQoder)
                 settingsRow("Hermes", tint: Theme.hermes, isOn: $showHermes)
                 settingsRow("OpenClaw", tint: Theme.openclaw, isOn: $showOpenClaw)
                 settingsRow("Pi", tint: Theme.pi, isOn: $showPi)
@@ -1363,7 +1367,7 @@ struct PanelView: View {
 
         if let data = result.stdout.data(using: .utf8),
            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            let tools = ["claude", "codex", "gemini", "grok", "qoder", "hermes", "openclaw", "pi", "opencode"]
+            let tools = ["claude", "codex", "gemini", "grok", "qoder", "qoderwork", "hermes", "openclaw", "pi", "opencode"]
                 .filter { json[$0] != nil }
                 .joined(separator: ",")
             lines.append("json: ok tools: \(tools)")

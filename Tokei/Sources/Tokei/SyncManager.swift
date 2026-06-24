@@ -85,6 +85,7 @@ final class SyncManager {
             mergeRanges(&u.gemini.ranges, peer.usage.gemini.ranges)
             mergeRanges(&u.grok.ranges, peer.usage.grok.ranges)
             mergeRanges(&u.qoder.ranges, peer.usage.qoder.ranges)
+            mergeRanges(&u.qoderwork.ranges, peer.usage.qoderwork.ranges)
             mergeRanges(&u.hermes.ranges, peer.usage.hermes.ranges)
             mergeRanges(&u.openclaw.ranges, peer.usage.openclaw.ranges)
             mergeRanges(&u.pi.ranges, peer.usage.pi.ranges)

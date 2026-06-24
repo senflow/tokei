@@ -298,6 +298,9 @@ def _empty_qoder():
                   "duration": 0, "ctx_sum": 0.0, "ctx_count": 0} for k in RANGE_KEYS}
     return {"ranges": ranges, "quota": None, "model": None}
 
+def _empty_qodercli():
+    return {"ranges": _empty_token_ranges()}
+
 
 def _empty_hermes():
     ranges = {k: {"in": 0, "out": 0, "cr": 0, "cw": 0, "reason": 0,
@@ -958,6 +961,82 @@ def scan_qoder(bounds, cache):
     return {"ranges": B, "quota": quota, "model": model}
 
 
+# ---------- Qoder CLI ----------
+# JSONL: ~/.qoder/projects/<proj>/<session>.jsonl (same format as Claude Code)
+
+def scan_qoder_cli(bounds, cache):
+    fc = cache.setdefault("qodercli", {})
+    B = _empty_token_ranges()
+
+    proj_dir = os.path.join(QODER_DIR, "projects")
+    if not os.path.isdir(proj_dir):
+        return {"ranges": B}
+
+    stale = set(fc.keys())
+
+    for f in glob.glob(os.path.join(proj_dir, "**", "*.jsonl"), recursive=True):
+        stale.discard(f)
+        try:
+            st = os.stat(f)
+        except OSError:
+            continue
+        sig = f"{st.st_mtime}:{st.st_size}"
+        entry = fc.get(f)
+        if not entry or entry.get("sig") != sig:
+            days = {}
+            seen_mids = set()
+            try:
+                with open(f, "r", encoding="utf-8", errors="ignore") as fh:
+                    for line in fh:
+                        if '"usage"' not in line:
+                            continue
+                        try:
+                            o = json.loads(line)
+                        except Exception:
+                            continue
+                        if o.get("type") != "assistant":
+                            continue
+                        msg = o.get("message") or {}
+                        u = msg.get("usage")
+                        if not u:
+                            continue
+                        mid = msg.get("id")
+                        if mid:
+                            if mid in seen_mids:
+                                continue
+                            seen_mids.add(mid)
+                        dt = parse_ts(o.get("timestamp", ""))
+                        if dt is None:
+                            continue
+                        dt = dt.astimezone()
+                        inp = u.get("input_tokens", 0) or 0
+                        out = u.get("output_tokens", 0) or 0
+                        cr = u.get("cache_read_input_tokens", 0) or 0
+                        cw = u.get("cache_creation_input_tokens", 0) or 0
+                        model = msg.get("model") or ""
+                        if inp + out + cr + cw == 0:
+                            continue
+                        dk = dt.date().isoformat()
+                        day = days.setdefault(dk, _empty_token_day())
+                        _add_token_usage(day, inp, out, cr, cw, 0, 0.0, model)
+            except OSError:
+                continue
+            fc[f] = {"sig": sig, "days": days}
+
+    for p in stale:
+        fc.pop(p, None)
+
+    for f, entry in fc.items():
+        for dk, day in entry.get("days", {}).items():
+            try:
+                d = date.fromisoformat(dk)
+            except ValueError:
+                continue
+            for k in classify_date(d, bounds):
+                _merge_token_day(B[k], day, f)
+    return {"ranges": B}
+
+
 # ---------- Hermes ----------
 # SQLite: ~/.hermes/state.db (旧布局) + ~/.hermes/profiles/*/state.db (profile 布局)
 def _hermes_db_paths():
@@ -1487,7 +1566,8 @@ def compute():
     cx = _safe_scan("codex", lambda: scan_codex(bounds, cache), _empty_codex, errors)
     gm = _safe_scan("gemini", lambda: scan_gemini(bounds), _empty_gemini, errors)
     gk = _safe_scan("grok", lambda: scan_grok(bounds), _empty_grok, errors)
-    qd = _safe_scan("qoder", lambda: scan_qoder(bounds, cache), _empty_qoder, errors)
+    qd = _safe_scan("qoderwork", lambda: scan_qoder(bounds, cache), _empty_qoder, errors)
+    qcli = _safe_scan("qodercli", lambda: scan_qoder_cli(bounds, cache), _empty_qodercli, errors)
     hm = _safe_scan("hermes", lambda: scan_hermes(bounds, cache), _empty_hermes, errors)
     oc = _safe_scan("openclaw", lambda: scan_openclaw(bounds, cache), _empty_openclaw, errors)
     pi = _safe_scan("pi", lambda: scan_pi(bounds, cache), _empty_pi, errors)
@@ -1549,7 +1629,7 @@ def compute():
     xranges = {k: codex_range(cx["ranges"][k]) for k in RANGE_KEYS}
     granges = {k: gemini_range(gm["ranges"][k]) for k in RANGE_KEYS}
     kranges = {k: grok_range(gk["ranges"][k]) for k in RANGE_KEYS}
-    qranges = {k: qoder_range(qd["ranges"][k]) for k in RANGE_KEYS}
+    qwranges = {k: qoder_range(qd["ranges"][k]) for k in RANGE_KEYS}
 
     def hermes_range(b):
         denom = b["cr"] + b["cw"] + b["in"]
@@ -1578,6 +1658,7 @@ def compute():
 
     piranges = {k: token_usage_range(pi["ranges"][k]) for k in RANGE_KEYS}
     ocranges = {k: token_usage_range(ocode["ranges"][k]) for k in RANGE_KEYS}
+    qcliranges = {k: token_usage_range(qcli["ranges"][k]) for k in RANGE_KEYS}
 
     cur = cc["cur"]
     cur_total = cur["in"] + cur["out"] + cur["cr"] + cur["cw"]
@@ -1617,7 +1698,10 @@ def compute():
             "model": gk["model"],
         },
         "qoder": {
-            "ranges": qranges,
+            "ranges": qcliranges,
+        },
+        "qoderwork": {
+            "ranges": qwranges,
             "quota": qd.get("quota"),
             "model": qd.get("model"),
         },
@@ -2049,6 +2133,13 @@ def daily_costs():
             d = days.setdefault(dk, _empty())
             d["tokens"] += day.get("in", 0) + day.get("out", 0)
 
+    for fp, entry in cache.get("qodercli", {}).items():
+        for dk, day in entry.get("days", {}).items():
+            if cutoff and dk < cutoff:
+                continue
+            d = days.setdefault(dk, _empty())
+            d["tokens"] += token_total(day)
+
     codex_total = sum(d["codex"] for d in days.values())
     codex_in = sum(d["x_in"] for d in days.values())
     codex_out = sum(d["x_out"] for d in days.values())
@@ -2241,6 +2332,21 @@ def wrapped():
             day_tokens[dk] = day_tokens.get(dk, 0) + tok
             total_tokens += tok
             weekday[date.fromisoformat(dk).weekday()] += tok
+
+    # --- Qoder CLI (token_usage format) ---
+    for f, entry in cache.get("qodercli", {}).items():
+        if not isinstance(entry, dict):
+            continue
+        for dk, day in entry.get("days", {}).items():
+            if cutoff and dk < cutoff:
+                continue
+            tok = token_total(day)
+            day_tokens[dk] = day_tokens.get(dk, 0) + tok
+            total_tokens += tok
+            weekday[date.fromisoformat(dk).weekday()] += tok
+            for mn, mv in day.get("models", {}).items():
+                nm = f"{nice_model(mn)} (Qoder)"
+                model_tok[nm] = model_tok.get(nm, 0) + token_total(mv)
 
     # --- Gemini (无缓存,需重新扫描取 year 总量;仅 all/365d 包含) ---
     if period in ("all", "365d"):

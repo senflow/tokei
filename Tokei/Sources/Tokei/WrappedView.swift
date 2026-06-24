@@ -350,7 +350,7 @@ struct BadgeView: View {
 // 撒花:跨 token 里程碑时从顶部落下的彩屑。
 struct ConfettiView: View {
     @State private var fall = false
-    private let palette: [Color] = [Theme.claude, Theme.qoder, Theme.hermes,
+    private let palette: [Color] = [Theme.claude, Theme.qoder, Theme.qodercli, Theme.hermes,
                                     Theme.codex, Theme.gemini, Theme.openclaw]
     var body: some View {
         GeometryReader { geo in

@@ -424,14 +424,15 @@ struct Usage: Codable {
     var codex: CodexStat
     var gemini: GeminiStat
     var grok: GrokStat
-    var qoder: QoderStat
+    var qoder: TokenUsageStat
+    var qoderwork: QoderStat
     var hermes: HermesStat
     var openclaw: OpenClawStat
     var pi: TokenUsageStat
     var opencode: TokenUsageStat
 
     enum CodingKeys: String, CodingKey {
-        case claude, codex, gemini, grok, qoder, hermes, openclaw, pi, opencode
+        case claude, codex, gemini, grok, qoder, qoderwork, hermes, openclaw, pi, opencode
     }
 
     init(from decoder: Decoder) throws {
@@ -440,7 +441,8 @@ struct Usage: Codable {
         codex = try c.decode(CodexStat.self, forKey: .codex)
         gemini = try c.decode(GeminiStat.self, forKey: .gemini)
         grok = try c.decode(GrokStat.self, forKey: .grok)
-        qoder = try c.decode(QoderStat.self, forKey: .qoder)
+        qoder = try c.decodeIfPresent(TokenUsageStat.self, forKey: .qoder) ?? TokenUsageStat(ranges: .empty)
+        qoderwork = try c.decodeIfPresent(QoderStat.self, forKey: .qoderwork) ?? QoderStat(ranges: QoderRanges(today: QoderRange(in: 0, out: 0), yesterday: QoderRange(in: 0, out: 0), week: QoderRange(in: 0, out: 0), last_week: QoderRange(in: 0, out: 0), month: QoderRange(in: 0, out: 0), year: QoderRange(in: 0, out: 0)))
         hermes = try c.decode(HermesStat.self, forKey: .hermes)
         openclaw = try c.decode(OpenClawStat.self, forKey: .openclaw)
         pi = try c.decodeIfPresent(TokenUsageStat.self, forKey: .pi) ?? TokenUsageStat(ranges: .empty)

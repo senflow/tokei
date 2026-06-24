@@ -162,11 +162,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let showX = ud.object(forKey: "showCodex") as? Bool ?? true
                 let showP = ud.object(forKey: "showPi") as? Bool ?? true
                 let showO = ud.object(forKey: "showOpenCode") as? Bool ?? true
+                let showQCli = ud.object(forKey: "showQoderCli") as? Bool ?? true
                 var total = 0
                 if showC { let r = u.claude.ranges.get(.today); total += Int(r.in + r.out + r.cr + r.cw) }
                 if showX { let r = u.codex.ranges.get(.today); total += Int(r.in + r.out + r.cached + r.reason) }
                 if showP { let r = u.pi.ranges.get(.today); total += Int(r.in + r.out + r.cr + r.cw + r.reason) }
                 if showO { let r = u.opencode.ranges.get(.today); total += Int(r.in + r.out + r.cr + r.cw + r.reason) }
+                if showQCli { let r = u.qoder.ranges.get(.today); total += Int(r.in + r.out + r.cr + r.cw + r.reason) }
                 if total > 0 {
                     seg(Fmt.human(total), .secondaryLabelColor)
                 } else {
