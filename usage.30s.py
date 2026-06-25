@@ -22,7 +22,8 @@ CLAUDE_DIR = os.path.join(HOME, ".claude", "projects")
 CODEX_DIR = os.path.join(HOME, ".codex", "sessions")
 GEMINI_DIR = os.path.join(HOME, ".gemini", "tmp")
 GROK_DIR = os.path.join(HOME, ".grok", "sessions")
-QODER_DIR = os.path.join(HOME, ".qoder")
+QODER_IDE_DB = os.path.join(HOME, "Library", "Application Support", "Qoder",
+                            "SharedClientCache", "cache", "db", "local.db")
 HERMES_DB = os.path.join(HOME, ".hermes", "state.db")
 OPENCODE_DIR = os.path.join(HOME, ".local", "share", "opencode", "storage", "message")
 OPENCLAW_DB = os.path.join(HOME, ".openclaw", "tasks", "runs.sqlite")
@@ -238,7 +239,7 @@ def human(n: float) -> str:
 # ---------- 增量扫描缓存 ----------
 import tempfile as _tempfile
 _SCAN_CACHE_FILE = os.path.join(_tempfile.gettempdir(), "_tokei_scan_cache.json")
-_SCAN_CACHE_VERSION = 7
+_SCAN_CACHE_VERSION = 9
 
 
 def _load_scan_cache():
@@ -294,12 +295,9 @@ def _empty_grok():
 
 
 def _empty_qoder():
-    ranges = {k: {"in": 0, "out": 0, "sessions": 0, "calls": 0,
-                  "duration": 0, "ctx_sum": 0.0, "ctx_count": 0} for k in RANGE_KEYS}
-    return {"ranges": ranges, "quota": None, "model": None}
-
-def _empty_qodercli():
-    return {"ranges": _empty_token_ranges()}
+    ranges = {k: {"in": 0, "out": 0, "sessions": 0, "calls": 0, "sub_agents": 0,
+                  "duration": 0, "turns": 0, "ctx_sum": 0.0, "ctx_count": 0} for k in RANGE_KEYS}
+    return {"ranges": ranges, "model": None}
 
 
 def _empty_hermes():
@@ -841,200 +839,253 @@ def scan_grok(bounds):
 
 # ---------- Qoder ----------
 # QoderWork SQLite:~/Library/Application Support/QoderWork/data/agents.db
-# messages 表 metadata 含 durationMs / contextUsageRatio(token 字段目前全 0)。
+# messages.metadata 含 durationMs / numTurns, sub_chats.ext 含上下文快照。
 _QODER_DB = os.path.join(HOME, "Library", "Application Support", "QoderWork", "data", "agents.db")
 
 
 def scan_qoder(bounds, cache):
     import sqlite3 as _sqlite3
     fc = cache.setdefault("qoder", {})
-    empty = {k: {"in": 0, "out": 0, "sessions": 0, "calls": 0,
-                 "duration": 0, "ctx_sum": 0.0, "ctx_count": 0}
-             for k in RANGE_KEYS}
-    if not os.path.isfile(_QODER_DB):
-        return {"ranges": empty}
+
+    # --- Part 1: DB (all queries cached together by sig) ---
+    db_days = {}
+    sub_chat_days = {}  # date_str → count
+    model = None
+    if os.path.isfile(_QODER_DB):
+        try:
+            sig = f"{os.path.getmtime(_QODER_DB)}:{os.path.getsize(_QODER_DB)}"
+            _wal = _QODER_DB + "-wal"
+            if os.path.isfile(_wal):
+                sig += f"|{os.path.getmtime(_wal)}:{os.path.getsize(_wal)}"
+        except OSError:
+            sig = None
+
+        entry = fc.get("db")
+        if sig and (not entry or entry.get("sig") != sig):
+            try:
+                conn = _sqlite3.connect(f"file:{_QODER_DB}?mode=ro", uri=True)
+                # messages: calls, sessions, tokens, duration, turns
+                for row in conn.execute("""
+                    SELECT date(created_at,'unixepoch','localtime') as day,
+                           COUNT(*) as calls,
+                           COUNT(DISTINCT chat_id) as sessions,
+                           COALESCE(SUM(json_extract(metadata,'$.inputTokens')),0),
+                           COALESCE(SUM(json_extract(metadata,'$.outputTokens')),0),
+                           COALESCE(SUM(json_extract(metadata,'$.durationMs')),0),
+                           COALESCE(SUM(json_extract(metadata,'$.numTurns')),0)
+                    FROM messages WHERE metadata!='{}'
+                    GROUP BY day
+                """):
+                    dk, calls, sessions, ti, to_, dur, turns = row
+                    if dk:
+                        db_days[dk] = {"calls": calls, "sessions": sessions,
+                                       "in": int(ti or 0), "out": int(to_ or 0),
+                                       "duration": int(dur or 0), "turns": int(turns or 0),
+                                       "ctx_ratio": 0.0}
+                # sub_chats: ctx percentage per day
+                for row in conn.execute("""
+                    SELECT date(created_at,'unixepoch','localtime') as day,
+                           AVG(CASE WHEN json_extract(ext,'$.contextUsageSnapshot.percentage')>0
+                                    THEN json_extract(ext,'$.contextUsageSnapshot.percentage') END)
+                    FROM sub_chats
+                    WHERE ext IS NOT NULL AND ext != '{}'
+                    GROUP BY day
+                """):
+                    dk, ctx_pct = row
+                    if dk and ctx_pct and dk in db_days:
+                        db_days[dk]["ctx_ratio"] = float(ctx_pct)
+                # sub_chats: count per day (for sub_agents metric)
+                for row in conn.execute("""
+                    SELECT date(created_at,'unixepoch','localtime') as day, COUNT(*)
+                    FROM sub_chats WHERE created_at IS NOT NULL
+                    GROUP BY day
+                """):
+                    if row[0]:
+                        sub_chat_days[row[0]] = int(row[1])
+                # model level
+                mrow = conn.execute("SELECT value FROM app_settings WHERE key='modelLevel'").fetchone()
+                if mrow:
+                    model = mrow[0].strip('"')
+                conn.close()
+            except Exception:
+                pass
+            fc["db"] = {"sig": sig, "days": db_days,
+                        "sub_chat_days": sub_chat_days, "model": model}
+        else:
+            db_days = (entry or {}).get("days", {})
+            sub_chat_days = (entry or {}).get("sub_chat_days", {})
+            model = (entry or {}).get("model")
+
+    # --- 汇总 DB 数据 ---
+    B = {k: {"sessions": 0, "calls": 0, "sub_agents": 0,
+             "duration": 0, "turns": 0, "ctx_sum": 0.0, "ctx_count": 0}
+         for k in RANGE_KEYS}
+
+    for dk, db_day in db_days.items():
+        try:
+            d = date.fromisoformat(dk)
+        except ValueError:
+            continue
+        ks = classify_date(d, bounds)
+        if not ks:
+            continue
+
+        calls = db_day.get("calls", 0)
+        sessions = db_day.get("sessions", 0)
+        duration = db_day.get("duration", 0)
+        turns = db_day.get("turns", 0)
+        ctx_ratio = db_day.get("ctx_ratio", 0)
+
+        for k in ks:
+            b = B[k]
+            b["sessions"] += sessions; b["calls"] += calls
+            b["sub_agents"] += sub_chat_days.get(dk, 0)
+            b["duration"] += duration; b["turns"] += turns
+            if ctx_ratio > 0:
+                b["ctx_sum"] += ctx_ratio * calls
+                b["ctx_count"] += calls
+
+    return {"ranges": B, "model": model}
+
+
+# ---------- Qoder IDE ----------
+# Qoder IDE: SQLite DB ~/Library/Application Support/Qoder/SharedClientCache/cache/db/local.db
+# chat_message 表: token_info(JSON明文), model_info(JSON明文), gmt_create(毫秒时间戳)
+
+
+def _empty_qoder_ide():
+    ranges = {k: {"in": 0, "out": 0, "cached": 0, "sessions": 0, "sub_agents": 0,
+                  "calls": 0, "messages": 0, "duration": 0} for k in RANGE_KEYS}
+    return {"ranges": ranges, "model": None}
+
+
+def scan_qoder_ide(bounds, cache):
+    import sqlite3 as _sq
+    fc = cache.setdefault("qoder_ide", {})
+    empty = _empty_qoder_ide()
+
+    # 默认关闭，需在 config.json 中显式启用
+    try:
+        with open(os.path.join(_USER_DIR, "config.json"), "r") as f:
+            cfg = json.load(f)
+        if not cfg.get("qoder_ide_enabled"):
+            return empty
+    except (OSError, json.JSONDecodeError, ValueError):
+        return empty
+
+    if not os.path.isfile(QODER_IDE_DB):
+        return empty
 
     try:
-        sig = f"{os.path.getmtime(_QODER_DB)}:{os.path.getsize(_QODER_DB)}"
+        sig = f"{os.path.getmtime(QODER_IDE_DB)}:{os.path.getsize(QODER_IDE_DB)}"
+        _wal = QODER_IDE_DB + "-wal"
+        if os.path.isfile(_wal):
+            sig += f"|{os.path.getmtime(_wal)}:{os.path.getsize(_wal)}"
     except OSError:
-        return {"ranges": empty}
+        return empty
 
-    entry = fc.get("db")
+    entry = fc.get("data")
     if not entry or entry.get("sig") != sig:
-        days = {}
+        days = {}  # date_str → {in, out, cached, session_ids, sub_agent_ids, calls, messages, duration}
+        latest_model = None
         try:
-            conn = _sqlite3.connect(f"file:{_QODER_DB}?mode=ro", uri=True)
+            conn = _sq.connect(f"file:{QODER_IDE_DB}?mode=ro", uri=True)
+            # token 用量 & 计数 per day
             for row in conn.execute("""
-                SELECT date(created_at,'unixepoch','localtime') as day,
-                       COUNT(*) as calls,
-                       COUNT(DISTINCT chat_id) as sessions,
-                       COALESCE(SUM(json_extract(metadata,'$.inputTokens')),0),
-                       COALESCE(SUM(json_extract(metadata,'$.outputTokens')),0),
-                       COALESCE(SUM(json_extract(metadata,'$.durationMs')),0),
-                       COALESCE(AVG(CASE WHEN json_extract(metadata,'$.contextUsageRatio')>0
-                                    THEN json_extract(metadata,'$.contextUsageRatio') END),0)
-                FROM messages WHERE metadata!='{}'
+                SELECT date(gmt_create/1000, 'unixepoch', 'localtime') as day,
+                       COALESCE(SUM(json_extract(token_info, '$.prompt_tokens')), 0),
+                       COALESCE(SUM(json_extract(token_info, '$.completion_tokens')), 0),
+                       COALESCE(SUM(json_extract(token_info, '$.cached_tokens')), 0),
+                       COUNT(DISTINCT request_id),
+                       COUNT(*)
+                FROM chat_message
+                WHERE token_info IS NOT NULL AND token_info != ''
                 GROUP BY day
             """):
-                dk, calls, sessions, ti, to_, dur, ctx = row
-                if dk:
-                    days[dk] = {"calls": calls, "sessions": sessions,
-                                "in": int(ti or 0), "out": int(to_ or 0),
-                                "duration": int(dur or 0), "ctx_ratio": float(ctx or 0)}
+                dk, ti, to_, cached, calls, msgs = row
+                if not dk:
+                    continue
+                days[dk] = {"in": int(ti), "out": int(to_), "cached": int(cached),
+                            "session_ids": [], "sub_agent_ids": [],
+                            "calls": int(calls), "messages": int(msgs), "duration": 0}
+            # collect session_ids per day, split by type (user vs sub-agent)
+            sub_agent_sids = set()
+            try:
+                for row in conn.execute("""
+                    SELECT session_id FROM chat_session
+                    WHERE session_type LIKE 'agent_sub_%'
+                """):
+                    sub_agent_sids.add(row[0])
+            except Exception:
+                pass
+            for row in conn.execute("""
+                SELECT date(gmt_create/1000, 'unixepoch', 'localtime') as day,
+                       session_id
+                FROM chat_message
+                WHERE token_info IS NOT NULL AND token_info != ''
+                GROUP BY day, session_id
+            """):
+                dk, sid = row
+                if dk and dk in days and sid:
+                    if sid in sub_agent_sids:
+                        days[dk]["sub_agent_ids"].append(sid)
+                    else:
+                        days[dk]["session_ids"].append(sid)
+            # duration per day (sum of per-request time spans)
+            for row in conn.execute("""
+                SELECT date(min_ts/1000, 'unixepoch', 'localtime') as day,
+                       SUM(max_ts - min_ts) / 1000 as dur_sec
+                FROM (SELECT request_id, MIN(gmt_create) as min_ts, MAX(gmt_create) as max_ts
+                      FROM chat_message GROUP BY request_id HAVING COUNT(*) > 1) sub
+                GROUP BY day
+            """):
+                dk, dur = row
+                if dk and dk in days:
+                    days[dk]["duration"] = int(dur)
+            # latest model
+            row = conn.execute("""
+                SELECT json_extract(model_info, '$.model_key') FROM chat_message
+                WHERE model_info IS NOT NULL AND model_info != ''
+                ORDER BY gmt_create DESC LIMIT 1
+            """).fetchone()
+            if row and row[0]:
+                latest_model = row[0]
             conn.close()
         except Exception:
             pass
-        fc["db"] = {"sig": sig, "days": days}
-        entry = fc["db"]
 
-    today_d = bounds["today"].date()
-    yest_d = bounds["yesterday"].date()
-    week_d = bounds["week"].date()
-    lw_start_d = bounds["last_week"].date()
-    lw_end_d = bounds["last_week_end"].date()
-    month_d = bounds["month"].date()
-    year_d = bounds["year"].date()
+        fc["data"] = {"sig": sig, "days": days, "model": latest_model}
+        entry = fc["data"]
 
-    B = {k: {"in": 0, "out": 0, "sessions": 0, "calls": 0,
-             "duration": 0, "ctx_sum": 0.0, "ctx_count": 0}
-         for k in RANGE_KEYS}
+    # 按时间范围聚合（sessions/sub_agents 用 set 去重，避免跨天会话被多算）
+    B = {k: {"in": 0, "out": 0, "cached": 0, "sessions": 0, "sub_agents": 0,
+             "calls": 0, "messages": 0, "duration": 0} for k in RANGE_KEYS}
+    session_sets = {k: set() for k in RANGE_KEYS}
+    sub_agent_sets = {k: set() for k in RANGE_KEYS}
 
     for dk, day in entry.get("days", {}).items():
         try:
             d = date.fromisoformat(dk)
         except ValueError:
             continue
-        ks = []
-        if d == today_d: ks.append("today")
-        if d == yest_d: ks.append("yesterday")
-        if d >= week_d: ks.append("week")
-        if lw_start_d <= d < lw_end_d: ks.append("last_week")
-        if d >= month_d: ks.append("month")
-        if d >= year_d: ks.append("year")
-        for k in ks:
+        for k in classify_date(d, bounds):
             b = B[k]
-            b["in"] += day["in"]; b["out"] += day["out"]
-            b["sessions"] += day["sessions"]; b["calls"] += day["calls"]
-            b["duration"] += day["duration"]
-            if day["ctx_ratio"] > 0:
-                b["ctx_sum"] += day["ctx_ratio"] * day["calls"]
-                b["ctx_count"] += day["calls"]
+            b["in"] += day["in"]
+            b["out"] += day["out"]
+            b["cached"] += day["cached"]
+            b["calls"] += day["calls"]
+            b["messages"] += day.get("messages", 0)
+            b["duration"] += day.get("duration", 0)
+            for sid in day.get("session_ids", []):
+                session_sets[k].add(sid)
+            for sid in day.get("sub_agent_ids", []):
+                sub_agent_sets[k].add(sid)
 
-    # 从 QoderWork 日志提取最新 credit 额度
-    quota = None
-    qw_logs = os.path.join(HOME, "Library", "Application Support", "QoderWork", "logs")
-    if os.path.isdir(qw_logs):
-        log_dirs = sorted(glob.glob(os.path.join(qw_logs, "2*")), reverse=True)
-        for ld in log_dirs[:2]:
-            main_log = os.path.join(ld, "main.log")
-            if not os.path.isfile(main_log):
-                continue
-            try:
-                with open(main_log, "r", encoding="utf-8", errors="ignore") as fh:
-                    for line in fh:
-                        if '"operation":"usage"' not in line or '"userQuota"' not in line:
-                            continue
-                        m = re.search(r'"data":(\{.*?"isQuotaExceeded":\w+)', line)
-                        if not m:
-                            continue
-                        try:
-                            quota = json.loads(m.group(1) + "}")
-                        except Exception:
-                            pass
-            except OSError:
-                pass
-            if quota:
-                break
+    for k in RANGE_KEYS:
+        B[k]["sessions"] = len(session_sets[k])
+        B[k]["sub_agents"] = len(sub_agent_sets[k])
 
-    # 当前模型
-    model = None
-    try:
-        import sqlite3 as _sq
-        conn = _sq.connect(f"file:{_QODER_DB}?mode=ro", uri=True)
-        row = conn.execute("SELECT value FROM app_settings WHERE key='modelLevel'").fetchone()
-        if row:
-            model = row[0].strip('"')
-        conn.close()
-    except Exception:
-        pass
-
-    return {"ranges": B, "quota": quota, "model": model}
-
-
-# ---------- Qoder CLI ----------
-# JSONL: ~/.qoder/projects/<proj>/<session>.jsonl (same format as Claude Code)
-
-def scan_qoder_cli(bounds, cache):
-    fc = cache.setdefault("qodercli", {})
-    B = _empty_token_ranges()
-
-    proj_dir = os.path.join(QODER_DIR, "projects")
-    if not os.path.isdir(proj_dir):
-        return {"ranges": B}
-
-    stale = set(fc.keys())
-
-    for f in glob.glob(os.path.join(proj_dir, "**", "*.jsonl"), recursive=True):
-        stale.discard(f)
-        try:
-            st = os.stat(f)
-        except OSError:
-            continue
-        sig = f"{st.st_mtime}:{st.st_size}"
-        entry = fc.get(f)
-        if not entry or entry.get("sig") != sig:
-            days = {}
-            seen_mids = set()
-            try:
-                with open(f, "r", encoding="utf-8", errors="ignore") as fh:
-                    for line in fh:
-                        if '"usage"' not in line:
-                            continue
-                        try:
-                            o = json.loads(line)
-                        except Exception:
-                            continue
-                        if o.get("type") != "assistant":
-                            continue
-                        msg = o.get("message") or {}
-                        u = msg.get("usage")
-                        if not u:
-                            continue
-                        mid = msg.get("id")
-                        if mid:
-                            if mid in seen_mids:
-                                continue
-                            seen_mids.add(mid)
-                        dt = parse_ts(o.get("timestamp", ""))
-                        if dt is None:
-                            continue
-                        dt = dt.astimezone()
-                        inp = u.get("input_tokens", 0) or 0
-                        out = u.get("output_tokens", 0) or 0
-                        cr = u.get("cache_read_input_tokens", 0) or 0
-                        cw = u.get("cache_creation_input_tokens", 0) or 0
-                        model = msg.get("model") or ""
-                        if inp + out + cr + cw == 0:
-                            continue
-                        dk = dt.date().isoformat()
-                        day = days.setdefault(dk, _empty_token_day())
-                        _add_token_usage(day, inp, out, cr, cw, 0, 0.0, model)
-            except OSError:
-                continue
-            fc[f] = {"sig": sig, "days": days}
-
-    for p in stale:
-        fc.pop(p, None)
-
-    for f, entry in fc.items():
-        for dk, day in entry.get("days", {}).items():
-            try:
-                d = date.fromisoformat(dk)
-            except ValueError:
-                continue
-            for k in classify_date(d, bounds):
-                _merge_token_day(B[k], day, f)
-    return {"ranges": B}
+    return {"ranges": B, "model": entry.get("model")}
 
 
 # ---------- Hermes ----------
@@ -1567,7 +1618,7 @@ def compute():
     gm = _safe_scan("gemini", lambda: scan_gemini(bounds), _empty_gemini, errors)
     gk = _safe_scan("grok", lambda: scan_grok(bounds), _empty_grok, errors)
     qd = _safe_scan("qoderwork", lambda: scan_qoder(bounds, cache), _empty_qoder, errors)
-    qcli = _safe_scan("qodercli", lambda: scan_qoder_cli(bounds, cache), _empty_qodercli, errors)
+    qi = _safe_scan("qoder_ide", lambda: scan_qoder_ide(bounds, cache), _empty_qoder_ide, errors)
     hm = _safe_scan("hermes", lambda: scan_hermes(bounds, cache), _empty_hermes, errors)
     oc = _safe_scan("openclaw", lambda: scan_openclaw(bounds, cache), _empty_openclaw, errors)
     pi = _safe_scan("pi", lambda: scan_pi(bounds, cache), _empty_pi, errors)
@@ -1618,18 +1669,30 @@ def compute():
                 "ttft": int(b.get("ttft_sum", 0) / latency_count) if latency_count else 0,
                 "response": int(b.get("response_sum", 0) / latency_count) if latency_count else 0}
 
-    def qoder_range(b):
+    def qoderwork_range(b):
         ctx_count = b.get("ctx_count", 0)
         ctx = (b.get("ctx_sum", 0.0) / ctx_count * 100) if ctx_count else 0.0
-        return {"in": b.get("in", 0), "out": b.get("out", 0),
-                "sessions": b.get("sessions", 0), "calls": b.get("calls", 0),
+        return {"sessions": b.get("sessions", 0), "calls": b.get("calls", 0),
+                "sub_agents": b.get("sub_agents", 0),
+                "turns": b.get("turns", 0),
                 "duration": b.get("duration", 0), "ctx": ctx}
+
+    def qoder_range(b):
+        total_in = b.get("in", 0)
+        cached = b.get("cached", 0)
+        # cached is subset of in(prompt_tokens); show non-cached portion as "输入" (consistent with Codex/Gemini)
+        ctx = (cached / total_in * 100) if total_in else 0.0
+        return {"in": max(total_in - cached, 0), "out": b.get("out", 0), "cached": cached,
+                "sessions": b.get("sessions", 0), "sub_agents": b.get("sub_agents", 0),
+                "calls": b.get("calls", 0), "messages": b.get("messages", 0),
+                "ctx": ctx, "duration": b.get("duration", 0)}
 
     cranges = {k: claude_range(cc["ranges"][k]) for k in RANGE_KEYS}
     xranges = {k: codex_range(cx["ranges"][k]) for k in RANGE_KEYS}
     granges = {k: gemini_range(gm["ranges"][k]) for k in RANGE_KEYS}
     kranges = {k: grok_range(gk["ranges"][k]) for k in RANGE_KEYS}
-    qwranges = {k: qoder_range(qd["ranges"][k]) for k in RANGE_KEYS}
+    qwranges = {k: qoderwork_range(qd["ranges"][k]) for k in RANGE_KEYS}
+    qranges = {k: qoder_range(qi["ranges"][k]) for k in RANGE_KEYS}
 
     def hermes_range(b):
         denom = b["cr"] + b["cw"] + b["in"]
@@ -1658,7 +1721,6 @@ def compute():
 
     piranges = {k: token_usage_range(pi["ranges"][k]) for k in RANGE_KEYS}
     ocranges = {k: token_usage_range(ocode["ranges"][k]) for k in RANGE_KEYS}
-    qcliranges = {k: token_usage_range(qcli["ranges"][k]) for k in RANGE_KEYS}
 
     cur = cc["cur"]
     cur_total = cur["in"] + cur["out"] + cur["cr"] + cur["cw"]
@@ -1697,13 +1759,13 @@ def compute():
             "ranges": kranges,
             "model": gk["model"],
         },
-        "qoder": {
-            "ranges": qcliranges,
-        },
         "qoderwork": {
             "ranges": qwranges,
-            "quota": qd.get("quota"),
             "model": qd.get("model"),
+        },
+        "qoder": {
+            "ranges": qranges,
+            "model": qi.get("model"),
         },
         "hermes": {
             "ranges": hranges,
@@ -2040,12 +2102,13 @@ def daily_costs():
     if period == "1d":
         cutoff = today.isoformat()
     elif period == "7d":
-        cutoff = (today - timedelta(days=6)).isoformat()
+        cutoff = (today - timedelta(days=today.weekday())).isoformat()
     elif period == "30d":
-        cutoff = (today - timedelta(days=29)).isoformat()
+        cutoff = today.replace(day=1).isoformat()
     elif period == "365d":
         cutoff = today.replace(month=1, day=1).isoformat()
 
+    compute()
     cache = _load_scan_cache()
     days = {}
     models = {}
@@ -2133,17 +2196,21 @@ def daily_costs():
             d = days.setdefault(dk, _empty())
             d["tokens"] += day.get("in", 0) + day.get("out", 0)
 
-    for fp, entry in cache.get("qodercli", {}).items():
+    for fp, entry in cache.get("qoder_ide", {}).items():
+        model_name = entry.get("model") or "Qoder"
         for dk, day in entry.get("days", {}).items():
             if cutoff and dk < cutoff:
                 continue
             d = days.setdefault(dk, _empty())
-            d["tokens"] += token_total(day)
-            for mn, mv in day.get("models", {}).items():
-                nm = f"{nice_model(mn)} (Qoder)"
-                m = models.setdefault(nm, {"cost": 0.0, "in": 0, "out": 0, "cr": 0, "cw": 0, "reason": 0, "tool": "qoder"})
-                for key in TOKEN_FIELDS:
-                    m[key] += mv.get(key, 0)
+            input_total = day.get("in", 0)
+            cached = day.get("cached", 0)
+            output = day.get("out", 0)
+            d["tokens"] += input_total + output
+            nm = f"{nice_model(model_name)} (Qoder)"
+            m = models.setdefault(nm, {"cost": 0.0, "in": 0, "out": 0, "cr": 0, "cw": 0, "reason": 0, "tool": "qoder"})
+            m["in"] += max(input_total - cached, 0)
+            m["out"] += output
+            m["cr"] += cached
 
     codex_total = sum(d["codex"] for d in days.values())
     codex_in = sum(d["x_in"] for d in days.values())
@@ -2214,16 +2281,14 @@ def wrapped():
     if period == "1d":
         cutoff = today.isoformat()
     elif period == "7d":
-        cutoff = (today - timedelta(days=6)).isoformat()
+        cutoff = (today - timedelta(days=today.weekday())).isoformat()
     elif period == "30d":
-        cutoff = (today - timedelta(days=29)).isoformat()
+        cutoff = today.replace(day=1).isoformat()
     elif period == "365d":
-        cutoff = (today.replace(month=1, day=1)).isoformat()
+        cutoff = today.replace(month=1, day=1).isoformat()
 
+    compute()
     cache = _load_scan_cache()
-    if not cache.get("claude"):
-        compute()
-        cache = _load_scan_cache()
 
     hours = [0] * 24
     weekday = [0] * 7
@@ -2328,7 +2393,7 @@ def wrapped():
                 nm = f"{nice_model(mn)} (Pi)"
                 model_tok[nm] = model_tok.get(nm, 0) + token_total(mv)
 
-    # --- Qoder (in + out, no cost) ---
+    # --- QoderWork (in + out, no cost) ---
     for f, entry in cache.get("qoder", {}).items():
         if not isinstance(entry, dict):
             continue
@@ -2340,20 +2405,20 @@ def wrapped():
             total_tokens += tok
             weekday[date.fromisoformat(dk).weekday()] += tok
 
-    # --- Qoder CLI (token_usage format) ---
-    for f, entry in cache.get("qodercli", {}).items():
+    # --- Qoder IDE (in + out, no cost; cached is subset of in) ---
+    for f, entry in cache.get("qoder_ide", {}).items():
         if not isinstance(entry, dict):
             continue
+        model_name = entry.get("model") or "Qoder"
         for dk, day in entry.get("days", {}).items():
             if cutoff and dk < cutoff:
                 continue
-            tok = token_total(day)
+            tok = day.get("in", 0) + day.get("out", 0)
             day_tokens[dk] = day_tokens.get(dk, 0) + tok
             total_tokens += tok
             weekday[date.fromisoformat(dk).weekday()] += tok
-            for mn, mv in day.get("models", {}).items():
-                nm = f"{nice_model(mn)} (Qoder)"
-                model_tok[nm] = model_tok.get(nm, 0) + token_total(mv)
+            nm = f"{nice_model(model_name)} (Qoder)"
+            model_tok[nm] = model_tok.get(nm, 0) + tok
 
     # --- Gemini (无缓存,需重新扫描取 year 总量;仅 all/365d 包含) ---
     if period in ("all", "365d"):
@@ -2475,10 +2540,8 @@ def wrapped():
 
 def projects():
     """项目足迹:从缓存聚合所有项目路径、活跃时间、session 数、token、成本。"""
+    compute()
     cache = _load_scan_cache()
-    if not cache.get("claude"):
-        compute()
-        cache = _load_scan_cache()
 
     proj_map = {}  # path → {sessions, tokens, cost, last_active, model_tok}
 

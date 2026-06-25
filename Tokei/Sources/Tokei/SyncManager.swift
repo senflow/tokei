@@ -84,8 +84,8 @@ final class SyncManager {
             mergeRanges(&u.codex.ranges, peer.usage.codex.ranges)
             mergeRanges(&u.gemini.ranges, peer.usage.gemini.ranges)
             mergeRanges(&u.grok.ranges, peer.usage.grok.ranges)
-            mergeRanges(&u.qoder.ranges, peer.usage.qoder.ranges)
             mergeRanges(&u.qoderwork.ranges, peer.usage.qoderwork.ranges)
+            mergeRanges(&u.qoder.ranges, peer.usage.qoder.ranges)
             mergeRanges(&u.hermes.ranges, peer.usage.hermes.ranges)
             mergeRanges(&u.openclaw.ranges, peer.usage.openclaw.ranges)
             mergeRanges(&u.pi.ranges, peer.usage.pi.ranges)
@@ -132,8 +132,20 @@ final class SyncManager {
     private static func mergeRanges(_ dst: inout QoderRanges, _ src: QoderRanges) {
         for k in RangeKey.allCases {
             var d = dst.get(k), s = src.get(k)
-            d.in += s.in; d.out += s.out; d.sessions += s.sessions
-            d.calls += s.calls; d.duration += s.duration
+            d.sessions += s.sessions
+            d.calls += s.calls; d.sub_agents += s.sub_agents
+            d.turns += s.turns; d.duration += s.duration
+            dst.set(k, d)
+        }
+    }
+
+    private static func mergeRanges(_ dst: inout QoderIdeRanges, _ src: QoderIdeRanges) {
+        for k in RangeKey.allCases {
+            var d = dst.get(k), s = src.get(k)
+            d.in += s.in; d.out += s.out; d.cached += s.cached
+            d.sessions += s.sessions
+            d.sub_agents += s.sub_agents; d.calls += s.calls
+            d.messages += s.messages; d.duration += s.duration
             dst.set(k, d)
         }
     }

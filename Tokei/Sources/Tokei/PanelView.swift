@@ -7,7 +7,6 @@ struct PanelView: View {
     @State private var sel: RangeKey = .today
     @State private var claudeModelsOpen = false
     @State private var geminiModelsOpen = false
-    @State private var qoderModelsOpen = false
     @State private var piModelsOpen = false
     @State private var openCodeModelsOpen = false
     @State private var mode: PanelMode = .cards
@@ -25,15 +24,15 @@ struct PanelView: View {
     @AppStorage("showCodex") private var showCodex = true
     @AppStorage("showGemini") private var showGemini = true
     @AppStorage("showGrok") private var showGrok = true
-    @AppStorage("showQoder") private var showQoder = true
-    @AppStorage("showQoderCli") private var showQoderCli = true
+    @AppStorage("showQoderIde") private var showQoder = false
+    @AppStorage("showQoderWork") private var showQoderWork = true
     @AppStorage("showHermes") private var showHermes = true
     @AppStorage("showOpenClaw") private var showOpenClaw = true
     @AppStorage("showPi") private var showPi = true
     @AppStorage("showOpenCode") private var showOpenCode = true
 
     private var visibleCount: Int {
-        [showClaude, showCodex, showGemini, showGrok, showQoderCli, showQoder, showHermes, showOpenClaw, showPi, showOpenCode].filter { $0 }.count
+        [showClaude, showCodex, showGemini, showGrok, showQoder, showQoderWork, showHermes, showOpenClaw, showPi, showOpenCode].filter { $0 }.count
     }
     private var useWide: Bool { visibleCount > 2 }
     private var panelWidth: CGFloat { useWide ? 640 : Theme.panelWidth }
@@ -192,7 +191,8 @@ struct PanelView: View {
     private func toolCards(for u: Usage) -> [ToolCardItem] {
         let cr = u.claude.ranges.get(sel), xr = u.codex.ranges.get(sel)
         let gr = u.gemini.ranges.get(sel), kr = u.grok.ranges.get(sel)
-        let qclir = u.qoder.ranges.get(sel), qwr = u.qoderwork.ranges.get(sel), hr = u.hermes.ranges.get(sel)
+        let qr = u.qoder.ranges.get(sel), qwr = u.qoderwork.ranges.get(sel)
+        let hr = u.hermes.ranges.get(sel)
         let lr = u.openclaw.ranges.get(sel), pr = u.pi.ranges.get(sel), or = u.opencode.ranges.get(sel)
         return [
             ToolCardItem(id: "claude", name: "Claude", visible: showClaude, active: cr.sessions > 0,
@@ -203,10 +203,10 @@ struct PanelView: View {
                          tint: Theme.gemini, content: AnyView(geminiBlock(gr))),
             ToolCardItem(id: "grok", name: "Grok", visible: showGrok, active: kr.sessions > 0,
                          tint: Theme.grok, content: AnyView(grokBlock(kr, model: u.grok.model))),
-            ToolCardItem(id: "qoder", name: "Qoder", visible: showQoderCli, active: qclir.sessions > 0,
-                         tint: Theme.qodercli, content: AnyView(tokenUsageBlock(title: "Qoder", qclir, tint: Theme.qodercli, modelsOpen: $qoderModelsOpen))),
-            ToolCardItem(id: "qoderwork", name: "QoderWork", visible: showQoder, active: qwr.calls > 0,
-                         tint: Theme.qoder, content: AnyView(qoderBlock(u.qoderwork, qwr))),
+            ToolCardItem(id: "qoder", name: "Qoder", visible: showQoder, active: qr.calls > 0,
+                         tint: Theme.qoder, content: AnyView(qoderIdeBlock(u.qoder, qr))),
+            ToolCardItem(id: "qoderwork", name: "QoderWork", visible: showQoderWork, active: qwr.calls > 0,
+                         tint: Theme.qoderwork, content: AnyView(qoderworkBlock(u.qoderwork, qwr))),
             ToolCardItem(id: "hermes", name: "Hermes", visible: showHermes, active: hr.sessions > 0,
                          tint: Theme.hermes, content: AnyView(hermesBlock(hr))),
             ToolCardItem(id: "openclaw", name: "OpenClaw", visible: showOpenClaw, active: lr.tasks > 0 || lr.in + lr.out > 0,
@@ -389,38 +389,78 @@ struct PanelView: View {
         }
     }
 
-    // MARK: - Qoder 卡片
+    // MARK: - Qoder IDE 卡片
     @ViewBuilder
-    func qoderBlock(_ q: QoderStat, _ r: QoderRange) -> some View {
+    func qoderIdeBlock(_ q: QoderIdeStat, _ r: QoderIdeRange) -> some View {
         VStack(alignment: .leading, spacing: 11) {
-            cardHeadPlain("QoderWork", tint: Theme.qoder)
+            cardHeadPlain("Qoder", tint: Theme.qoder)
             if r.calls > 0 {
+                let total = r.in + r.cached + r.out
+                if total > 0 {
+                    CostHeadline(value: Fmt.human(total), caption: "\(sel.label) 总量", tint: Theme.qoder)
+                }
                 metricGrid({
                     var items: [Metric] = [
                         .init("terminal", "调用", "\(r.calls)"),
-                        .init("clock", "耗时", Fmt.duration(r.duration)),
+                        .init("person.2", "会话", "\(r.sessions)"),
                     ]
+                    if r.sub_agents > 0 {
+                        items.append(.init("point.3.connected.trianglepath.dotted", "子agent", "\(r.sub_agents)"))
+                    }
+                    if r.messages > 0 {
+                        items.append(.init("bubble.left.and.bubble.right", "消息数", Fmt.human(r.messages)))
+                    }
                     if r.ctx > 0 {
-                        items.append(.init("chart.bar.fill", "上下文", String(format: "%.0f%%", r.ctx)))
+                        items.append(.init("chart.bar.fill", "缓存命中", String(format: "%.0f%%", r.ctx)))
+                    }
+                    if r.duration > 0 {
+                        items.append(.init("clock", "耗时", Fmt.duration(r.duration * 1000)))
                     }
                     if r.in > 0 {
                         items.append(.init("arrow.down", "输入", Fmt.human(r.in)))
                     }
+                    if r.out > 0 {
+                        items.append(.init("arrow.up", "输出", Fmt.human(r.out)))
+                    }
+                    if r.cached > 0 {
+                        items.append(.init("bolt.fill", "缓存读", Fmt.human(r.cached)))
+                    }
                     return items
                 }(), tint: Theme.qoder)
-                if let quota = q.quota {
-                    thinDivider
-                    if let uq = quota.userQuota, let rem = uq.remaining, let tot = uq.total {
-                        let pct = tot > 0 ? Double(rem) / Double(tot) * 100 : 0
-                        quotaRow(title: "个人额度", pct: pct, reset: quota.expiresAt.map { $0 / 1000 }, tint: Theme.qoder)
-                    }
-                    if let org = quota.orgResourcePackage, let rem = org.remaining, let cap = org.cap {
-                        let pct = cap > 0 ? Double(rem) / Double(cap) * 100 : 0
-                        quotaRow(title: "团队额度", pct: pct, reset: nil, tint: Theme.qoder)
-                    }
-                }
                 if let model = q.model, !model.isEmpty {
                     modelBadge(model, tint: Theme.qoder)
+                }
+            } else {
+                emptyHint
+            }
+        }
+    }
+
+    // MARK: - QoderWork 卡片
+    @ViewBuilder
+    func qoderworkBlock(_ q: QoderStat, _ r: QoderRange) -> some View {
+        VStack(alignment: .leading, spacing: 11) {
+            cardHeadPlain("QoderWork", tint: Theme.qoderwork)
+            if r.calls > 0 {
+                metricGrid({
+                    var items: [Metric] = [
+                        .init("terminal", "调用", "\(r.calls)"),
+                        .init("person.2", "会话", "\(r.sessions)"),
+                        .init("clock", "耗时", Fmt.duration(r.duration)),
+                    ]
+                    if r.sub_agents > 0 {
+                        items.append(.init("point.3.connected.trianglepath.dotted", "子agent", "\(r.sub_agents)"))
+                    }
+                    if r.turns > 0 {
+                        items.append(.init("bubble.left.and.bubble.right", "消息数", Fmt.human(r.turns)))
+                    }
+                    if r.ctx > 0 {
+                        items.append(.init("chart.bar.fill", "平均深度", String(format: "%.0f%%", r.ctx)))
+                    }
+                    return items
+                }(), tint: Theme.qoderwork)
+                if let model = q.model, !model.isEmpty {
+                    modelBadge(model, tint: Theme.qoderwork)
                 }
             } else {
                 emptyHint
@@ -761,10 +801,15 @@ struct PanelView: View {
         }
     }
 
-    func quotaRow(title: String, pct: Double, reset: Int?, tint: Color) -> some View {
+    func quotaRow(title: String, pct: Double, detail: String? = nil, reset: Int?, tint: Color) -> some View {
         VStack(spacing: 4) {
             HStack {
                 Text(title).font(.system(size: 11)).foregroundStyle(Theme.tSecondary)
+                if let d = detail {
+                    Text(d)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(Theme.tTertiary)
+                }
                 Spacer()
                 Text(String(format: "%.0f%%", pct))
                     .font(.system(size: 12, weight: .semibold, design: .monospaced))
@@ -929,13 +974,30 @@ struct PanelView: View {
                 settingsRow("Codex", tint: Theme.codex, isOn: $showCodex)
                 settingsRow("Gemini", tint: Theme.gemini, isOn: $showGemini)
                 settingsRow("Grok", tint: Theme.grok, isOn: $showGrok)
-                settingsRow("Qoder", tint: Theme.qodercli, isOn: $showQoderCli)
-                settingsRow("QoderWork", tint: Theme.qoder, isOn: $showQoder)
+                settingsRow("Qoder", tint: Theme.qoder, isOn: $showQoder)
+                settingsRow("QoderWork", tint: Theme.qoderwork, isOn: $showQoderWork)
                 settingsRow("Hermes", tint: Theme.hermes, isOn: $showHermes)
                 settingsRow("OpenClaw", tint: Theme.openclaw, isOn: $showOpenClaw)
                 settingsRow("Pi", tint: Theme.pi, isOn: $showPi)
                 settingsRow("OpenCode", tint: Theme.opencode, isOn: $showOpenCode)
             }
+        }
+        .onChange(of: showQoder) { enabled in
+            Self.setQoderIdeEnabled(enabled)
+        }
+    }
+
+    private static func setQoderIdeEnabled(_ enabled: Bool) {
+        let configURL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".tokei/config.json")
+        var dict: [String: Any] = [:]
+        if let data = try? Data(contentsOf: configURL),
+           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            dict = obj
+        }
+        dict["qoder_ide_enabled"] = enabled
+        if let data = try? JSONSerialization.data(withJSONObject: dict, options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: configURL)
         }
     }
 
