@@ -98,6 +98,8 @@ struct DashboardView: View {
         switch tool {
         case "codex": return Theme.codex
         case "pi": return Theme.pi
+        case "qoder": return Theme.qodercli
+        case "opencode": return Theme.opencode
         default: return Theme.claude
         }
     }

@@ -223,6 +223,10 @@ struct QoderRanges: Codable {
     var last_week: QoderRange
     var month: QoderRange
     var year: QoderRange
+    static var empty: QoderRanges {
+        let r = QoderRange(in: 0, out: 0)
+        return QoderRanges(today: r, yesterday: r, week: r, last_week: r, month: r, year: r)
+    }
     func get(_ k: RangeKey) -> QoderRange {
         switch k {
         case .today: return today; case .yesterday: return yesterday
@@ -441,8 +445,13 @@ struct Usage: Codable {
         codex = try c.decode(CodexStat.self, forKey: .codex)
         gemini = try c.decode(GeminiStat.self, forKey: .gemini)
         grok = try c.decode(GrokStat.self, forKey: .grok)
-        qoder = try c.decodeIfPresent(TokenUsageStat.self, forKey: .qoder) ?? TokenUsageStat(ranges: .empty)
-        qoderwork = try c.decodeIfPresent(QoderStat.self, forKey: .qoderwork) ?? QoderStat(ranges: QoderRanges(today: QoderRange(in: 0, out: 0), yesterday: QoderRange(in: 0, out: 0), week: QoderRange(in: 0, out: 0), last_week: QoderRange(in: 0, out: 0), month: QoderRange(in: 0, out: 0), year: QoderRange(in: 0, out: 0)))
+        if c.contains(.qoderwork) {
+            qoder = try c.decodeIfPresent(TokenUsageStat.self, forKey: .qoder) ?? TokenUsageStat(ranges: .empty)
+            qoderwork = try c.decodeIfPresent(QoderStat.self, forKey: .qoderwork) ?? QoderStat(ranges: .empty)
+        } else {
+            qoder = TokenUsageStat(ranges: .empty)
+            qoderwork = try c.decodeIfPresent(QoderStat.self, forKey: .qoder) ?? QoderStat(ranges: .empty)
+        }
         hermes = try c.decode(HermesStat.self, forKey: .hermes)
         openclaw = try c.decode(OpenClawStat.self, forKey: .openclaw)
         pi = try c.decodeIfPresent(TokenUsageStat.self, forKey: .pi) ?? TokenUsageStat(ranges: .empty)

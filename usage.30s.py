@@ -2139,6 +2139,11 @@ def daily_costs():
                 continue
             d = days.setdefault(dk, _empty())
             d["tokens"] += token_total(day)
+            for mn, mv in day.get("models", {}).items():
+                nm = f"{nice_model(mn)} (Qoder)"
+                m = models.setdefault(nm, {"cost": 0.0, "in": 0, "out": 0, "cr": 0, "cw": 0, "reason": 0, "tool": "qoder"})
+                for key in TOKEN_FIELDS:
+                    m[key] += mv.get(key, 0)
 
     codex_total = sum(d["codex"] for d in days.values())
     codex_in = sum(d["x_in"] for d in days.values())
@@ -2155,14 +2160,16 @@ def daily_costs():
               "p_in": v["p_in"], "p_out": v["p_out"], "p_cr": v["p_cr"], "p_cw": v["p_cw"], "p_reason": v["p_reason"],
               "tokens": v["tokens"]}
              for dk, v in sorted(days.items())]
-    model_list = []
-    for n, v in sorted(models.items(), key=lambda kv: -kv[1]["cost"]):
-        if v["cost"] <= 0:
-            continue
+    def model_tokens(v):
         if v.get("tool") == "codex":
-            total_tok = v["in"] + v["out"]   # in 已含 cached, out 已含 reason
-        else:
-            total_tok = v["in"] + v["out"] + v.get("cr", 0) + v.get("cw", 0) + v.get("reason", 0)
+            return v["in"] + v["out"]   # in 已含 cached, out 已含 reason
+        return v["in"] + v["out"] + v.get("cr", 0) + v.get("cw", 0) + v.get("reason", 0)
+
+    model_list = []
+    for n, v in sorted(models.items(), key=lambda kv: (-kv[1]["cost"], -model_tokens(kv[1]))):
+        total_tok = model_tokens(v)
+        if v["cost"] <= 0 and total_tok <= 0:
+            continue
         out_k = v["out"] / 1000 if v["out"] else 0
         cost_per_k = round(v["cost"] / out_k, 3) if out_k > 0 else 0
         out_ratio = round(v["out"] / total_tok * 100, 1) if total_tok > 0 else 0

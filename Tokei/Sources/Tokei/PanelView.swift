@@ -7,6 +7,9 @@ struct PanelView: View {
     @State private var sel: RangeKey = .today
     @State private var claudeModelsOpen = false
     @State private var geminiModelsOpen = false
+    @State private var qoderModelsOpen = false
+    @State private var piModelsOpen = false
+    @State private var openCodeModelsOpen = false
     @State private var mode: PanelMode = .cards
     @State private var trailProjects: [TrailProject]?
     enum PanelMode { case cards, dashboard, projects, settings }
@@ -201,7 +204,7 @@ struct PanelView: View {
             ToolCardItem(id: "grok", name: "Grok", visible: showGrok, active: kr.sessions > 0,
                          tint: Theme.grok, content: AnyView(grokBlock(kr, model: u.grok.model))),
             ToolCardItem(id: "qoder", name: "Qoder", visible: showQoderCli, active: qclir.sessions > 0,
-                         tint: Theme.qodercli, content: AnyView(tokenUsageBlock(title: "Qoder", qclir, tint: Theme.qodercli))),
+                         tint: Theme.qodercli, content: AnyView(tokenUsageBlock(title: "Qoder", qclir, tint: Theme.qodercli, modelsOpen: $qoderModelsOpen))),
             ToolCardItem(id: "qoderwork", name: "QoderWork", visible: showQoder, active: qwr.calls > 0,
                          tint: Theme.qoder, content: AnyView(qoderBlock(u.qoderwork, qwr))),
             ToolCardItem(id: "hermes", name: "Hermes", visible: showHermes, active: hr.sessions > 0,
@@ -209,9 +212,9 @@ struct PanelView: View {
             ToolCardItem(id: "openclaw", name: "OpenClaw", visible: showOpenClaw, active: lr.tasks > 0 || lr.in + lr.out > 0,
                          tint: Theme.openclaw, content: AnyView(openclawBlock(lr))),
             ToolCardItem(id: "pi", name: "Pi", visible: showPi, active: pr.sessions > 0,
-                         tint: Theme.pi, content: AnyView(tokenUsageBlock(title: "Pi Coding Agent", pr, tint: Theme.pi))),
+                         tint: Theme.pi, content: AnyView(tokenUsageBlock(title: "Pi Coding Agent", pr, tint: Theme.pi, modelsOpen: $piModelsOpen))),
             ToolCardItem(id: "opencode", name: "OpenCode", visible: showOpenCode, active: or.sessions > 0,
-                         tint: Theme.opencode, content: AnyView(tokenUsageBlock(title: "OpenCode", or, tint: Theme.opencode))),
+                         tint: Theme.opencode, content: AnyView(tokenUsageBlock(title: "OpenCode", or, tint: Theme.opencode, modelsOpen: $openCodeModelsOpen))),
         ]
     }
 
@@ -499,13 +502,16 @@ struct PanelView: View {
 
     // MARK: - Token usage cards
     @ViewBuilder
-    func tokenUsageBlock(title: String, _ r: TokenUsageRange, tint: Color) -> some View {
+    func tokenUsageBlock(title: String, _ r: TokenUsageRange, tint: Color, modelsOpen: Binding<Bool>) -> some View {
         VStack(alignment: .leading, spacing: 11) {
             cardHead(title, tint: tint, sessions: r.sessions)
             if r.sessions > 0 {
                 CostHeadline(value: Fmt.human(r.in + r.out + r.cr + r.cw + r.reason), caption: "\(sel.label) 总量", tint: tint)
                 metricGrid([.init("dollarsign.circle", "≈成本", String(format: "$%.2f", r.cost))],
                     hit: r.hit, extra: tokenUsageMetrics(r), tint: tint)
+                if !r.models.isEmpty {
+                    tokenModelDisclosure(r.models, open: modelsOpen, tint: tint)
+                }
             } else {
                 emptyHint
             }
@@ -565,6 +571,15 @@ struct PanelView: View {
         var total: Int = 0
         var hit: Double = 0
         var id: String { name }
+    }
+
+    func tokenModelTotal(_ m: TokenModelStat) -> Int {
+        m.in + m.out + m.cr + m.cw + m.reason
+    }
+
+    func tokenModelHit(_ m: TokenModelStat) -> Double {
+        let denom = m.cr + m.cw + m.in
+        return denom > 0 ? Double(m.cr) / Double(denom) * 100 : 0
     }
 
     func cardHead(_ title: String, tint: Color, sessions: Int = 0) -> some View {
@@ -634,6 +649,62 @@ struct PanelView: View {
         Text(mode == .settings ? "Made by lank" : "成本按 API 价估算,非订阅实付")
             .font(.system(size: 9))
             .foregroundStyle(Theme.tTertiary)
+    }
+
+    @ViewBuilder
+    func tokenModelDisclosure(_ models: [TokenModelStat], open: Binding<Bool>, tint: Color) -> some View {
+        Button {
+            open.wrappedValue.toggle()
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "chart.pie.fill")
+                    .font(.system(size: 9)).foregroundStyle(tint)
+                Text("按模型 (\(models.count))")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Theme.tSecondary)
+                Image(systemName: open.wrappedValue ? "chevron.down" : "chevron.right")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(Theme.tTertiary)
+                Spacer()
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        if open.wrappedValue {
+            VStack(alignment: .leading, spacing: 9) {
+                Text("按模型 · \(sel.label)")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Theme.tSecondary)
+                ForEach(models) { m in
+                    let total = tokenModelTotal(m)
+                    let hit = tokenModelHit(m)
+                    HStack(spacing: 7) {
+                        Circle().fill(tint.opacity(0.7)).frame(width: 5, height: 5)
+                        Text(m.name).font(.system(size: 11.5)).foregroundStyle(Theme.tPrimary)
+                            .lineLimit(1)
+                        Spacer(minLength: 4)
+                        Text(Fmt.human(total))
+                            .font(.system(size: 9.5, design: .monospaced))
+                            .foregroundStyle(Theme.tTertiary)
+                        if hit > 0 {
+                            Text(String(format: "%.0f%%", hit))
+                                .font(.system(size: 9.5, design: .monospaced))
+                                .foregroundStyle(Theme.tTertiary)
+                                .padding(.horizontal, 4).padding(.vertical, 1)
+                                .background(Capsule().fill(Color.primary.opacity(0.06)))
+                        }
+                        if m.cost > 0 {
+                            Text(String(format: "$%.2f", m.cost))
+                                .font(.system(size: 11.5, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(Theme.tPrimary)
+                        }
+                    }
+                }
+            }
+            .padding(10)
+            .background(RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(Color.primary.opacity(0.05)))
+        }
     }
 
     @ViewBuilder
