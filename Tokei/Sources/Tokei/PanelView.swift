@@ -25,7 +25,7 @@ struct PanelView: View {
     @AppStorage("showCodex") private var showCodex = true
     @AppStorage("showGemini") private var showGemini = true
     @AppStorage("showGrok") private var showGrok = true
-    @AppStorage("showQoderIde") private var showQoder = false
+    @AppStorage("showQoderIde") private var showQoder = true
     @AppStorage("showQoderWork") private var showQoderWork = true
     @AppStorage("showHermes") private var showHermes = true
     @AppStorage("showOpenClaw") private var showOpenClaw = true
