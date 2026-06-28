@@ -12,6 +12,12 @@ struct PeerDevice: Identifiable {
     var deviceId: String
     var lastSync: Date
     var usage: Usage
+    var dashboard: PeerDashboardSnapshot?
+}
+
+struct PeerDashboardSnapshot: Codable {
+    var daily: [DailyCost] = []
+    var wrapped: [String: WrappedData] = [:]
 }
 
 final class SyncManager {
@@ -66,10 +72,17 @@ final class SyncManager {
             for key in cleaned.keys where key.hasPrefix("_") { cleaned.removeValue(forKey: key) }
             guard let cleanData = try? JSONSerialization.data(withJSONObject: cleaned),
                   let usage = try? JSONDecoder().decode(Usage.self, from: cleanData) else { continue }
+            var dashboard: PeerDashboardSnapshot?
+            if let rawDashboard = raw["_dashboard"],
+               JSONSerialization.isValidJSONObject(rawDashboard),
+               let dashboardData = try? JSONSerialization.data(withJSONObject: rawDashboard) {
+                dashboard = try? JSONDecoder().decode(PeerDashboardSnapshot.self, from: dashboardData)
+            }
             peers.append(PeerDevice(
                 deviceId: deviceId,
                 lastSync: Date(timeIntervalSince1970: TimeInterval(ts)),
-                usage: usage
+                usage: usage,
+                dashboard: dashboard
             ))
         }
         return peers
@@ -84,6 +97,7 @@ final class SyncManager {
             mergeRanges(&u.codex.ranges, peer.usage.codex.ranges)
             mergeRanges(&u.gemini.ranges, peer.usage.gemini.ranges)
             mergeRanges(&u.grok.ranges, peer.usage.grok.ranges)
+            u.grok.model = mergeModelName(u.grok.model, peer.usage.grok.model)
             mergeRanges(&u.qoderwork.ranges, peer.usage.qoderwork.ranges)
             mergeRanges(&u.qoder.ranges, peer.usage.qoder.ranges)
             mergeRanges(&u.hermes.ranges, peer.usage.hermes.ranges)
@@ -129,7 +143,8 @@ final class SyncManager {
     private static func mergeRanges(_ dst: inout GrokRanges, _ src: GrokRanges) {
         for k in RangeKey.allCases {
             var d = dst.get(k), s = src.get(k)
-            let originalSessions = d.sessions
+            let originalLatencyWeight = max(d.turns ?? 0, d.sessions)
+            let sourceLatencyWeight = max(s.turns ?? 0, s.sessions)
             d.tokens += s.tokens; d.sessions += s.sessions
             d.turns = add(d.turns, s.turns)
             d.tools = add(d.tools, s.tools)
@@ -138,8 +153,8 @@ final class SyncManager {
             d.ctx_window = add(d.ctx_window, s.ctx_window)
             d.errors = add(d.errors, s.errors)
             d.cancellations = add(d.cancellations, s.cancellations)
-            d.ttft = weightedAverage(d.ttft, originalSessions, s.ttft, s.sessions)
-            d.response = weightedAverage(d.response, originalSessions, s.response, s.sessions)
+            d.ttft = weightedAverage(d.ttft, originalLatencyWeight, s.ttft, sourceLatencyWeight)
+            d.response = weightedAverage(d.response, originalLatencyWeight, s.response, sourceLatencyWeight)
             let ctxUsed = d.ctx_used ?? 0
             let ctxWindow = d.ctx_window ?? 0
             d.ctx = ctxWindow > 0 ? Double(ctxUsed) / Double(ctxWindow) * 100 : 0
@@ -272,6 +287,20 @@ final class SyncManager {
             }
         }
         dst.sort { $0.cost > $1.cost }
+    }
+
+    private static func mergeModelName(_ lhs: String?, _ rhs: String?) -> String? {
+        var names: [String] = []
+        for value in [lhs, rhs] {
+            guard let value else { continue }
+            for part in value.split(separator: ",") {
+                let name = part.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !name.isEmpty && !names.contains(name) {
+                    names.append(name)
+                }
+            }
+        }
+        return names.isEmpty ? nil : names.joined(separator: ", ")
     }
 
     // MARK: - Git sync

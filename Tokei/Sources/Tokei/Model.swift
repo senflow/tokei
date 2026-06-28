@@ -1,8 +1,9 @@
 import Foundation
 
 enum RangeKey: String, CaseIterable, Identifiable {
-    case yesterday, today, week, lastWeek = "last_week", month, year
+    case yesterday, today, week, lastWeek = "last_week", month, year, all
     var id: String { rawValue }
+    static let displayCases: [RangeKey] = [.today, .yesterday, .week, .lastWeek, .month, .year]
     var label: String {
         switch self {
         case .today: return "今日"
@@ -11,6 +12,7 @@ enum RangeKey: String, CaseIterable, Identifiable {
         case .lastWeek: return "上周"
         case .month: return "本月"
         case .year: return "本年"
+        case .all: return "全部"
         }
     }
 }
@@ -46,11 +48,13 @@ struct ClaudeRanges: Codable {
     var last_week: ClaudeRange
     var month: ClaudeRange
     var year: ClaudeRange
+    var all: ClaudeRange?
     func get(_ k: RangeKey) -> ClaudeRange {
         switch k {
         case .today: return today; case .yesterday: return yesterday
         case .week: return week; case .lastWeek: return last_week
         case .month: return month; case .year: return year
+        case .all: return all ?? year
         }
     }
     mutating func set(_ k: RangeKey, _ v: ClaudeRange) {
@@ -58,6 +62,7 @@ struct ClaudeRanges: Codable {
         case .today: today = v; case .yesterday: yesterday = v
         case .week: week = v; case .lastWeek: last_week = v
         case .month: month = v; case .year: year = v
+        case .all: all = v
         }
     }
 }
@@ -89,11 +94,13 @@ struct CodexRanges: Codable {
     var last_week: CodexRange
     var month: CodexRange
     var year: CodexRange
+    var all: CodexRange?
     func get(_ k: RangeKey) -> CodexRange {
         switch k {
         case .today: return today; case .yesterday: return yesterday
         case .week: return week; case .lastWeek: return last_week
         case .month: return month; case .year: return year
+        case .all: return all ?? year
         }
     }
     mutating func set(_ k: RangeKey, _ v: CodexRange) {
@@ -101,6 +108,7 @@ struct CodexRanges: Codable {
         case .today: today = v; case .yesterday: yesterday = v
         case .week: week = v; case .lastWeek: last_week = v
         case .month: month = v; case .year: year = v
+        case .all: all = v
         }
     }
 }
@@ -144,11 +152,13 @@ struct GeminiRanges: Codable {
     var last_week: GeminiRange
     var month: GeminiRange
     var year: GeminiRange
+    var all: GeminiRange?
     func get(_ k: RangeKey) -> GeminiRange {
         switch k {
         case .today: return today; case .yesterday: return yesterday
         case .week: return week; case .lastWeek: return last_week
         case .month: return month; case .year: return year
+        case .all: return all ?? year
         }
     }
     mutating func set(_ k: RangeKey, _ v: GeminiRange) {
@@ -156,6 +166,7 @@ struct GeminiRanges: Codable {
         case .today: today = v; case .yesterday: yesterday = v
         case .week: week = v; case .lastWeek: last_week = v
         case .month: month = v; case .year: year = v
+        case .all: all = v
         }
     }
 }
@@ -186,11 +197,13 @@ struct GrokRanges: Codable {
     var last_week: GrokRange
     var month: GrokRange
     var year: GrokRange
+    var all: GrokRange?
     func get(_ k: RangeKey) -> GrokRange {
         switch k {
         case .today: return today; case .yesterday: return yesterday
         case .week: return week; case .lastWeek: return last_week
         case .month: return month; case .year: return year
+        case .all: return all ?? year
         }
     }
     mutating func set(_ k: RangeKey, _ v: GrokRange) {
@@ -198,6 +211,7 @@ struct GrokRanges: Codable {
         case .today: today = v; case .yesterday: yesterday = v
         case .week: week = v; case .lastWeek: last_week = v
         case .month: month = v; case .year: year = v
+        case .all: all = v
         }
     }
 }
@@ -223,6 +237,7 @@ struct QoderRanges: Codable {
     var last_week: QoderRange
     var month: QoderRange
     var year: QoderRange
+    var all: QoderRange? = nil
     static var empty: QoderRanges {
         let r = QoderRange()
         return QoderRanges(today: r, yesterday: r, week: r, last_week: r, month: r, year: r)
@@ -232,6 +247,7 @@ struct QoderRanges: Codable {
         case .today: return today; case .yesterday: return yesterday
         case .week: return week; case .lastWeek: return last_week
         case .month: return month; case .year: return year
+        case .all: return all ?? year
         }
     }
     mutating func set(_ k: RangeKey, _ v: QoderRange) {
@@ -239,6 +255,7 @@ struct QoderRanges: Codable {
         case .today: today = v; case .yesterday: yesterday = v
         case .week: week = v; case .lastWeek: last_week = v
         case .month: month = v; case .year: year = v
+        case .all: all = v
         }
     }
 }
@@ -298,6 +315,7 @@ struct QoderIdeRanges: Codable {
     var last_week: QoderIdeRange
     var month: QoderIdeRange
     var year: QoderIdeRange
+    var all: QoderIdeRange? = nil
     static var empty: QoderIdeRanges {
         let r = QoderIdeRange()
         return QoderIdeRanges(today: r, yesterday: r, week: r, last_week: r, month: r, year: r)
@@ -307,6 +325,7 @@ struct QoderIdeRanges: Codable {
         case .today: return today; case .yesterday: return yesterday
         case .week: return week; case .lastWeek: return last_week
         case .month: return month; case .year: return year
+        case .all: return all ?? year
         }
     }
     mutating func set(_ k: RangeKey, _ v: QoderIdeRange) {
@@ -314,6 +333,7 @@ struct QoderIdeRanges: Codable {
         case .today: today = v; case .yesterday: yesterday = v
         case .week: week = v; case .lastWeek: last_week = v
         case .month: month = v; case .year: year = v
+        case .all: all = v
         }
     }
 }
@@ -357,11 +377,13 @@ struct TokenModelStat: Codable, Identifiable {
 }
 struct HermesRanges: Codable {
     var today, yesterday, week, last_week, month, year: HermesRange
+    var all: HermesRange? = nil
     func get(_ k: RangeKey) -> HermesRange {
         switch k {
         case .today: return today; case .yesterday: return yesterday
         case .week: return week; case .lastWeek: return last_week
         case .month: return month; case .year: return year
+        case .all: return all ?? year
         }
     }
     mutating func set(_ k: RangeKey, _ v: HermesRange) {
@@ -369,6 +391,7 @@ struct HermesRanges: Codable {
         case .today: today = v; case .yesterday: yesterday = v
         case .week: week = v; case .lastWeek: last_week = v
         case .month: month = v; case .year: year = v
+        case .all: all = v
         }
     }
 }
@@ -404,11 +427,13 @@ struct OpenClawRange: Codable {
 }
 struct OpenClawRanges: Codable {
     var today, yesterday, week, last_week, month, year: OpenClawRange
+    var all: OpenClawRange? = nil
     func get(_ k: RangeKey) -> OpenClawRange {
         switch k {
         case .today: return today; case .yesterday: return yesterday
         case .week: return week; case .lastWeek: return last_week
         case .month: return month; case .year: return year
+        case .all: return all ?? year
         }
     }
     mutating func set(_ k: RangeKey, _ v: OpenClawRange) {
@@ -416,6 +441,7 @@ struct OpenClawRanges: Codable {
         case .today: today = v; case .yesterday: yesterday = v
         case .week: week = v; case .lastWeek: last_week = v
         case .month: month = v; case .year: year = v
+        case .all: all = v
         }
     }
 }
@@ -460,6 +486,7 @@ struct TokenUsageRange: Codable {
 }
 struct TokenUsageRanges: Codable {
     var today, yesterday, week, last_week, month, year: TokenUsageRange
+    var all: TokenUsageRange? = nil
     static var empty: TokenUsageRanges {
         let r = TokenUsageRange()
         return TokenUsageRanges(today: r, yesterday: r, week: r, last_week: r, month: r, year: r)
@@ -469,6 +496,7 @@ struct TokenUsageRanges: Codable {
         case .today: return today; case .yesterday: return yesterday
         case .week: return week; case .lastWeek: return last_week
         case .month: return month; case .year: return year
+        case .all: return all ?? year
         }
     }
     mutating func set(_ k: RangeKey, _ v: TokenUsageRange) {
@@ -476,6 +504,7 @@ struct TokenUsageRanges: Codable {
         case .today: today = v; case .yesterday: yesterday = v
         case .week: week = v; case .lastWeek: last_week = v
         case .month: month = v; case .year: year = v
+        case .all: all = v
         }
     }
 }

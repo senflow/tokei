@@ -165,7 +165,7 @@ def gemini_price(model: str):
     return _raw_price(model)
 
 
-RANGE_KEYS = ["today", "yesterday", "week", "last_week", "month", "year"]
+RANGE_KEYS = ["today", "yesterday", "week", "last_week", "month", "year", "all"]
 TOKEN_FIELDS = ("in", "out", "cr", "cw", "reason")
 
 
@@ -204,7 +204,7 @@ def classify(dt, b):
 
 def classify_date(d, b):
     """给定本地日期,返回它命中的区间 key 列表。"""
-    ks = []
+    ks = ["all"]
     if d == b["today"].date():
         ks.append("today")
     if d == b["yesterday"].date():
@@ -261,10 +261,19 @@ def _save_scan_cache(cache):
     if not dirty:
         return
     cache["v"] = _SCAN_CACHE_VERSION
+    tmp = None
     try:
-        with open(_SCAN_CACHE_FILE, "w") as f:
+        fd, tmp = _tempfile.mkstemp(prefix="_tokei_scan_cache.", suffix=".json",
+                                    dir=os.path.dirname(_SCAN_CACHE_FILE))
+        with os.fdopen(fd, "w") as f:
             json.dump(cache, f, separators=(',', ':'))
+        os.replace(tmp, _SCAN_CACHE_FILE)
     except Exception:
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
         pass
 
 
@@ -454,7 +463,7 @@ def scan_claude(bounds, cache):
     for f, entry in fc.items():
         for dk, day in entry.get("days", {}).items():
             d = date.fromisoformat(dk)
-            ks = []
+            ks = ["all"]
             if d == today_d: ks.append("today")
             if d == yest_d: ks.append("yesterday")
             if d >= week_d: ks.append("week")
@@ -619,7 +628,7 @@ def scan_codex(bounds, cache):
     for f, entry in fc.items():
         for dk, day in entry.get("days", {}).items():
             d = date.fromisoformat(dk)
-            ks = []
+            ks = ["all"]
             if d == today_d: ks.append("today")
             if d == yest_d: ks.append("yesterday")
             if d >= week_d: ks.append("week")
@@ -673,14 +682,8 @@ def scan_codex(bounds, cache):
 def scan_gemini(bounds):
     if not os.path.isdir(GEMINI_DIR):
         return _empty_gemini()
-    scan_from = min(bounds["yesterday"], bounds["week"], bounds["month"], bounds["year"]).timestamp()
     best = {}  # sessionId -> (lastUpdated, data),同 id 取最新快照
     for f in glob.glob(os.path.join(GEMINI_DIR, "*", "chats", "session-*.json")):
-        try:
-            if os.path.getmtime(f) < scan_from:
-                continue
-        except OSError:
-            continue
         try:
             with open(f, "r", encoding="utf-8", errors="ignore") as fh:
                 d = json.load(fh)
@@ -1196,7 +1199,7 @@ def scan_openclaw(bounds, cache):
     year_d = bounds["year"].date()
 
     def _day_keys(d):
-        ks = []
+        ks = ["all"]
         if d == today_d: ks.append("today")
         if d == yest_d: ks.append("yesterday")
         if d >= week_d: ks.append("week")
@@ -1811,6 +1814,11 @@ def main_json():
             import time
             d["_device"] = device_id
             d["_ts"] = int(time.time())
+            d["_dashboard"] = {
+                "daily": build_daily_costs("all", refresh=False).get("daily", []),
+                "wrapped": {p: build_wrapped(p, refresh=False)
+                            for p in ["all", "1d", "7d", "30d", "365d"]},
+            }
             try:
                 with open(os.path.join(sync_dir, f"{device_id}.json"), "w") as f:
                     json.dump(d, f, ensure_ascii=False)
@@ -2090,13 +2098,16 @@ def update_unknown():
     return 0
 
 
-def daily_costs():
-    """输出按天+按模型的成本 JSON(从扫描缓存读,无额外 I/O)。"""
-    period = "all"
+def _arg_period(default="all"):
+    period = default
     for i, a in enumerate(sys.argv):
         if a == "--period" and i + 1 < len(sys.argv):
             period = sys.argv[i + 1]
             break
+    return period
+
+
+def _period_cutoff(period):
     cutoff = None
     today = date.today()
     if period == "1d":
@@ -2107,8 +2118,14 @@ def daily_costs():
         cutoff = today.replace(day=1).isoformat()
     elif period == "365d":
         cutoff = today.replace(month=1, day=1).isoformat()
+    return cutoff
 
-    compute()
+
+def build_daily_costs(period="all", refresh=True):
+    """按天+按模型的成本 JSON 数据,从扫描缓存聚合。"""
+    cutoff = _period_cutoff(period)
+    if refresh:
+        compute()
     cache = _load_scan_cache()
     days = {}
     models = {}
@@ -2227,6 +2244,7 @@ def daily_costs():
               "p_in": v["p_in"], "p_out": v["p_out"], "p_cr": v["p_cr"], "p_cw": v["p_cw"], "p_reason": v["p_reason"],
               "tokens": v["tokens"]}
              for dk, v in sorted(days.items())]
+
     def model_tokens(v):
         if v.get("tool") == "codex":
             return v["in"] + v["out"]   # in 已含 cached, out 已含 reason
@@ -2245,7 +2263,12 @@ def daily_costs():
                            "reason": v.get("reason", 0), "tokens": total_tok, "tool": v["tool"],
                            "cost_per_k": cost_per_k, "out_ratio": out_ratio})
 
-    print(json.dumps({"daily": daily, "models": model_list}, ensure_ascii=False))
+    return {"daily": daily, "models": model_list}
+
+
+def daily_costs():
+    """输出按天+按模型的成本 JSON(从扫描缓存读,无额外 I/O)。"""
+    print(json.dumps(build_daily_costs(_arg_period()), ensure_ascii=False))
 
 
 def _streak_info(dates):
@@ -2269,25 +2292,11 @@ def _streak_info(dates):
     return max_run, cur
 
 
-def wrapped():
-    """Tokei 回顾:作息 / 项目 / 连续 / 成就。汇总全部工具,不联网。"""
-    period = "all"
-    for i, a in enumerate(sys.argv):
-        if a == "--period" and i + 1 < len(sys.argv):
-            period = sys.argv[i + 1]
-            break
-    cutoff = None
-    today = date.today()
-    if period == "1d":
-        cutoff = today.isoformat()
-    elif period == "7d":
-        cutoff = (today - timedelta(days=today.weekday())).isoformat()
-    elif period == "30d":
-        cutoff = today.replace(day=1).isoformat()
-    elif period == "365d":
-        cutoff = today.replace(month=1, day=1).isoformat()
-
-    compute()
+def build_wrapped(period="all", refresh=True):
+    """Tokei 回顾数据。汇总全部工具,不联网。"""
+    cutoff = _period_cutoff(period)
+    if refresh:
+        compute()
     cache = _load_scan_cache()
 
     hours = [0] * 24
@@ -2519,7 +2528,7 @@ def wrapped():
     if len(active) >= 100:
         add("calendar", "元老", f"{len(active)} 天活跃", "pink")
 
-    print(json.dumps({
+    return {
         "total_tokens": total_tokens,
         "total_cost": round(total_cost, 2),
         "active_days": len(active),
@@ -2535,7 +2544,12 @@ def wrapped():
         "first_day": cutoff if cutoff else (active[0] if active else ""),
         "achievements": ach,
         "period": period,
-    }, ensure_ascii=False))
+    }
+
+
+def wrapped():
+    """Tokei 回顾:作息 / 项目 / 连续 / 成就。汇总全部工具,不联网。"""
+    print(json.dumps(build_wrapped(_arg_period()), ensure_ascii=False))
 
 
 def projects():

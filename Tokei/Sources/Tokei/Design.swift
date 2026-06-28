@@ -291,7 +291,7 @@ struct SegmentedTabs: View {
     @Namespace private var ns
     var body: some View {
         HStack(spacing: 2) {
-            ForEach(RangeKey.allCases) { k in
+            ForEach(RangeKey.displayCases) { k in
                 let on = k == sel
                 Text(k.label)
                     .font(.system(size: 12, weight: on ? .semibold : .regular))

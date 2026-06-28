@@ -34,6 +34,7 @@ struct PanelView: View {
     private var visibleCount: Int {
         [showClaude, showCodex, showGemini, showGrok, showQoder, showQoderWork, showHermes, showOpenClaw, showPi, showOpenCode].filter { $0 }.count
     }
+    private var hasMultipleDevices: Bool { store.syncEnabled && !store.peers.isEmpty }
     private var useWide: Bool { visibleCount > 2 }
     private var panelWidth: CGFloat { useWide ? 640 : Theme.panelWidth }
 
@@ -72,7 +73,7 @@ struct PanelView: View {
         VStack(alignment: .leading, spacing: 13) {
             header
             if mode == .dashboard {
-                DashboardView()
+                DashboardView(store: store)
             } else if mode == .projects {
                 ProjectTrailView(cached: $trailProjects)
             } else if mode == .settings {
@@ -146,6 +147,9 @@ struct PanelView: View {
             .tip("主页")
             updatePill
             Spacer()
+            if hasMultipleDevices {
+                deviceScopePicker
+            }
             Text(store.lastUpdated)
                 .font(.system(size: 9.5, design: .monospaced))
                 .foregroundStyle(Theme.tTertiary)
@@ -186,6 +190,18 @@ struct PanelView: View {
             .buttonStyle(.plain)
             .tip("设置")
         }
+    }
+
+    var deviceScopePicker: some View {
+        Picker("", selection: $store.showAllDevices) {
+            Text("本机").tag(false)
+            Text("全部").tag(true)
+        }
+        .pickerStyle(.segmented)
+        .frame(width: 92)
+        .controlSize(.mini)
+        .onChange(of: store.showAllDevices) { _ in store.applyDisplayMode() }
+        .tip("数据范围")
     }
 
     private func toolCards(for u: Usage) -> [ToolCardItem] {
@@ -1183,16 +1199,6 @@ struct PanelView: View {
                         .controlSize(.mini)
                         .onChange(of: syncInterval) { v in store.startAutoSync(minutes: v) }
                     }
-                }
-
-                settingsValueRow("展示") {
-                    Picker("", selection: $store.showAllDevices) {
-                        Text("本机").tag(false); Text("全部设备").tag(true)
-                    }
-                    .pickerStyle(.segmented)
-                    .frame(width: 120)
-                    .controlSize(.mini)
-                    .onChange(of: store.showAllDevices) { _ in store.applyDisplayMode() }
                 }
 
                 deviceStatusBlock

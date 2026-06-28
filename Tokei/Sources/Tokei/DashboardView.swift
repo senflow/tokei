@@ -36,6 +36,22 @@ struct ModelCost: Codable, Identifiable {
     var cost_per_k: Double = 0
     var out_ratio: Double = 0
     var id: String { name }
+
+    init(name: String, cost: Double, tool: String, input: Int? = nil, out: Int? = nil,
+         cr: Int? = nil, cw: Int? = nil, reason: Int? = nil, tokens: Int? = nil,
+         cost_per_k: Double = 0, out_ratio: Double = 0) {
+        self.name = name
+        self.cost = cost
+        self.tool = tool
+        self.in = input
+        self.out = out
+        self.cr = cr
+        self.cw = cw
+        self.reason = reason
+        self.tokens = tokens
+        self.cost_per_k = cost_per_k
+        self.out_ratio = out_ratio
+    }
 }
 
 struct DashboardData: Codable {
@@ -44,9 +60,13 @@ struct DashboardData: Codable {
 }
 
 struct DashboardView: View {
+    @ObservedObject var store: Store
     @State private var daily: [DailyCost] = []
     @State private var models: [ModelCost] = []
     @State private var wrapped: WrappedData? = nil
+    @State private var baseDaily: [DailyCost] = []
+    @State private var baseModels: [ModelCost] = []
+    @State private var baseWrapped: WrappedData? = nil
     @State private var loading = true
     @State private var wrappedPeriod: WrappedPeriod = .all
     @AppStorage("hideProjects") private var hideProjects = false
@@ -72,7 +92,10 @@ struct DashboardView: View {
                 }
             }
         }
-        .onAppear { loadData() }
+        .onAppear { loadData(showLoading: true) }
+        .onChange(of: store.showAllDevices) { _ in applyCachedScope(animated: true) }
+        .onChange(of: store.syncEnabled) { _ in applyCachedScope(animated: true) }
+        .onReceive(store.$usage) { _ in applyCachedScope(animated: false) }
     }
 
     // MARK: - Summary
@@ -97,8 +120,12 @@ struct DashboardView: View {
     func modelTint(_ tool: String) -> Color {
         switch tool {
         case "codex": return Theme.codex
-        case "pi": return Theme.pi
+        case "gemini": return Theme.gemini
+        case "grok": return Theme.grok
         case "qoder": return Theme.qoder
+        case "hermes": return Theme.hermes
+        case "openclaw": return Theme.openclaw
+        case "pi": return Theme.pi
         case "opencode": return Theme.opencode
         default: return Theme.claude
         }
@@ -382,15 +409,21 @@ struct DashboardView: View {
         }
     }
 
-    func loadData() {
-        loading = true
+    func loadData(showLoading: Bool = false) {
+        if showLoading || (daily.isEmpty && models.isEmpty && wrapped == nil) {
+            loading = true
+        }
+        let period = wrappedPeriod
         DispatchQueue.global(qos: .utility).async {
             let dd = try? JSONDecoder().decode(DashboardData.self, from: Self.runScript(["--daily-costs"]))
-            let wd = try? JSONDecoder().decode(WrappedData.self, from: Self.runScript(["--wrapped", "--period", wrappedPeriod.rawValue]))
+            let wd = try? JSONDecoder().decode(WrappedData.self, from: Self.runScript(["--wrapped", "--period", period.rawValue]))
+            let nextDaily = dd?.daily ?? []
+            let nextModels = dd?.models ?? []
             DispatchQueue.main.async {
-                daily = dd?.daily ?? []
-                models = dd?.models ?? []
-                wrapped = wd
+                baseDaily = nextDaily
+                baseModels = nextModels
+                baseWrapped = wd
+                applyCachedScope(animated: false)
                 loading = false
             }
         }
@@ -402,10 +435,382 @@ struct DashboardView: View {
             let wd = try? JSONDecoder().decode(WrappedData.self, from: Self.runScript(["--wrapped"] + periodArgs))
             let dd = try? JSONDecoder().decode(DashboardData.self, from: Self.runScript(["--daily-costs"] + periodArgs))
             DispatchQueue.main.async {
-                wrapped = wd
-                if let dd { daily = dd.daily; models = dd.models }
+                if let dd {
+                    baseDaily = dd.daily
+                    baseModels = dd.models
+                }
+                baseWrapped = wd
+                applyCachedScope(animated: true)
             }
         }
+    }
+
+    func applyCachedScope(animated: Bool) {
+        let update = {
+            let fallback = DashboardData(daily: baseDaily, models: baseModels)
+            if let scoped = scopedUsage() {
+                let scopedDaily = allDeviceDaily(period: wrappedPeriod)
+                daily = scopedDaily
+                models = Self.dashboardData(from: scoped, period: wrappedPeriod, fallback: fallback).models
+                wrapped = allDeviceWrapped(from: scoped, period: wrappedPeriod, daily: scopedDaily)
+            } else {
+                daily = baseDaily
+                models = baseModels
+                wrapped = baseWrapped
+            }
+            if !daily.isEmpty || !models.isEmpty || wrapped != nil {
+                loading = false
+            }
+        }
+        if animated {
+            withAnimation(.easeInOut(duration: 0.22), update)
+        } else {
+            update()
+        }
+    }
+
+    private func scopedUsage() -> Usage? {
+        guard store.syncEnabled, store.showAllDevices, !store.peers.isEmpty else { return nil }
+        return store.allDevicesUsage ?? store.usage
+    }
+
+    private func peerDashboards() -> [PeerDashboardSnapshot] {
+        store.peers.compactMap(\.dashboard)
+    }
+
+    private func allDeviceDaily(period: WrappedPeriod) -> [DailyCost] {
+        var byDate: [String: DailyCost] = [:]
+        for item in baseDaily {
+            if let existing = byDate[item.date] {
+                byDate[item.date] = Self.mergeDaily(existing, item)
+            } else {
+                byDate[item.date] = item
+            }
+        }
+        for snapshot in peerDashboards() {
+            for item in snapshot.daily where Self.includes(dateString: item.date, in: period) {
+                if let existing = byDate[item.date] {
+                    byDate[item.date] = Self.mergeDaily(existing, item)
+                } else {
+                    byDate[item.date] = item
+                }
+            }
+        }
+        return byDate.values.sorted { $0.date < $1.date }
+    }
+
+    private func allDeviceWrapped(from usage: Usage, period: WrappedPeriod, daily scopedDaily: [DailyCost]) -> WrappedData {
+        let peerWrapped = peerDashboards().compactMap { $0.wrapped[period.rawValue] }
+        var data = Self.wrappedData(from: usage, period: period, fallback: baseWrapped)
+
+        data.hours = Self.sumArrays(([baseWrapped?.hours ?? []] + peerWrapped.map(\.hours)), count: 24)
+        data.weekday = Self.sumArrays(([baseWrapped?.weekday ?? []] + peerWrapped.map(\.weekday)), count: 7)
+        data.projects = Self.mergeProjects(([baseWrapped?.projects ?? []] + peerWrapped.map(\.projects)).flatMap { $0 })
+        data.max_projs_day = ([baseWrapped?.max_projs_day ?? 0] + peerWrapped.map(\.max_projs_day)).max() ?? 0
+        data.night_share = Self.nightShare(from: data.hours)
+
+        let activeDays = scopedDaily.filter { $0.tokens > 0 || $0.total > 0 }.map(\.date).sorted()
+        data.active_days = activeDays.count
+        let streak = Self.streakInfo(activeDays)
+        data.streak_max = streak.max
+        data.streak_cur = streak.current
+        if let busiest = scopedDaily.max(by: { $0.tokens < $1.tokens }) {
+            data.busiest = WrappedBusiest(date: busiest.date, tokens: busiest.tokens)
+        }
+
+        let firstCandidates = ([baseWrapped?.first_day ?? ""] + peerWrapped.map(\.first_day) + activeDays)
+            .filter { !$0.isEmpty }
+        data.first_day = firstCandidates.min() ?? data.first_day
+        data.period = period.rawValue
+        return data
+    }
+
+    static func dashboardData(from usage: Usage, period: WrappedPeriod, fallback: DashboardData?) -> DashboardData {
+        DashboardData(daily: fallback?.daily ?? [], models: usageModels(from: usage, period: period))
+    }
+
+    static func wrappedData(from usage: Usage, period: WrappedPeriod, fallback: WrappedData?) -> WrappedData {
+        let key = rangeKey(for: period)
+        let totalTokens = usageTotalTokens(usage, key)
+        let totalCost = usageTotalCost(usage, key)
+        let modelList = usageModels(from: usage, period: period)
+        let top = modelList.max { ($0.tokens ?? 0) < ($1.tokens ?? 0) }
+        var data = fallback ?? WrappedData()
+        data.total_tokens = totalTokens
+        data.total_cost = totalCost
+        data.top_model = WrappedModel(name: top?.name ?? "-", tokens: top?.tokens ?? 0)
+        data.period = period.rawValue
+        if data.first_day.isEmpty {
+            data.first_day = firstDay(for: period)
+        }
+        return data
+    }
+
+    static func rangeKey(for period: WrappedPeriod) -> RangeKey {
+        switch period {
+        case .day: return .today
+        case .week: return .week
+        case .month: return .month
+        case .year: return .year
+        case .all: return .all
+        }
+    }
+
+    static func firstDay(for period: WrappedPeriod) -> String {
+        let today = Date()
+        let cal = Calendar.current
+        let fmt = DateFormatter()
+        fmt.dateFormat = "yyyy-MM-dd"
+        switch period {
+        case .day:
+            return fmt.string(from: today)
+        case .week:
+            let weekday = cal.component(.weekday, from: today)
+            let daysFromMonday = (weekday + 5) % 7
+            return fmt.string(from: cal.date(byAdding: .day, value: -daysFromMonday, to: today) ?? today)
+        case .month:
+            let start = cal.date(from: cal.dateComponents([.year, .month], from: today)) ?? today
+            return fmt.string(from: start)
+        case .year:
+            let start = cal.date(from: cal.dateComponents([.year], from: today)) ?? today
+            return fmt.string(from: start)
+        case .all:
+            return ""
+        }
+    }
+
+    static func includes(dateString: String, in period: WrappedPeriod) -> Bool {
+        guard let start = firstDayString(for: period) else { return true }
+        if period == .day { return dateString == start }
+        return dateString >= start
+    }
+
+    static func firstDayString(for period: WrappedPeriod) -> String? {
+        let today = Date()
+        let cal = Calendar.current
+        let fmt = DateFormatter()
+        fmt.dateFormat = "yyyy-MM-dd"
+        switch period {
+        case .all:
+            return nil
+        case .day:
+            return fmt.string(from: today)
+        case .week:
+            let weekday = cal.component(.weekday, from: today)
+            let daysFromMonday = (weekday + 5) % 7
+            return fmt.string(from: cal.date(byAdding: .day, value: -daysFromMonday, to: today) ?? today)
+        case .month:
+            let start = cal.date(from: cal.dateComponents([.year, .month], from: today)) ?? today
+            return fmt.string(from: start)
+        case .year:
+            let start = cal.date(from: cal.dateComponents([.year], from: today)) ?? today
+            return fmt.string(from: start)
+        }
+    }
+
+    static func mergeDaily(_ lhs: DailyCost, _ rhs: DailyCost) -> DailyCost {
+        DailyCost(date: lhs.date,
+                  claude: lhs.claude + rhs.claude,
+                  codex: lhs.codex + rhs.codex,
+                  pi: lhs.pi + rhs.pi,
+                  total: lhs.total + rhs.total,
+                  c_in: lhs.c_in + rhs.c_in,
+                  c_out: lhs.c_out + rhs.c_out,
+                  c_cr: lhs.c_cr + rhs.c_cr,
+                  c_cw: lhs.c_cw + rhs.c_cw,
+                  x_in: lhs.x_in + rhs.x_in,
+                  x_out: lhs.x_out + rhs.x_out,
+                  x_cached: lhs.x_cached + rhs.x_cached,
+                  x_reason: lhs.x_reason + rhs.x_reason,
+                  p_in: lhs.p_in + rhs.p_in,
+                  p_out: lhs.p_out + rhs.p_out,
+                  p_cr: lhs.p_cr + rhs.p_cr,
+                  p_cw: lhs.p_cw + rhs.p_cw,
+                  p_reason: lhs.p_reason + rhs.p_reason,
+                  tokens: lhs.tokens + rhs.tokens)
+    }
+
+    static func sumArrays(_ arrays: [[Int]], count: Int) -> [Int] {
+        var out = Array(repeating: 0, count: count)
+        for array in arrays {
+            for i in 0..<min(count, array.count) {
+                out[i] += array[i]
+            }
+        }
+        return out
+    }
+
+    static func mergeProjects(_ projects: [WrappedProject]) -> [WrappedProject] {
+        var byName: [String: WrappedProject] = [:]
+        for project in projects {
+            if var existing = byName[project.name] {
+                existing.tokens += project.tokens
+                existing.cost += project.cost
+                byName[project.name] = existing
+            } else {
+                byName[project.name] = project
+            }
+        }
+        return byName.values.sorted { $0.tokens > $1.tokens }.prefix(8).map { $0 }
+    }
+
+    static func nightShare(from hours: [Int]) -> Double {
+        let total = hours.reduce(0, +)
+        guard total > 0 else { return 0 }
+        let night = hours.prefix(6).reduce(0, +)
+        return Double(night) / Double(total) * 100
+    }
+
+    static func streakInfo(_ dates: [String]) -> (max: Int, current: Int) {
+        let fmt = DateFormatter()
+        fmt.dateFormat = "yyyy-MM-dd"
+        let days = dates.compactMap { fmt.date(from: $0) }.sorted()
+        guard !days.isEmpty else { return (0, 0) }
+        let cal = Calendar.current
+        var maxRun = 1
+        var run = 1
+        for i in 1..<days.count {
+            let gap = cal.dateComponents([.day], from: days[i - 1], to: days[i]).day ?? 0
+            run = gap == 1 ? run + 1 : 1
+            maxRun = max(maxRun, run)
+        }
+        let today = cal.startOfDay(for: Date())
+        let last = cal.startOfDay(for: days.last ?? today)
+        guard let gapToToday = cal.dateComponents([.day], from: last, to: today).day, gapToToday <= 1 else {
+            return (maxRun, 0)
+        }
+        var current = 1
+        if days.count > 1 {
+            for i in stride(from: days.count - 1, through: 1, by: -1) {
+                let gap = cal.dateComponents([.day], from: days[i - 1], to: days[i]).day ?? 0
+                guard gap == 1 else { break }
+                current += 1
+            }
+        }
+        return (maxRun, current)
+    }
+
+    static func usageModels(from usage: Usage, period: WrappedPeriod) -> [ModelCost] {
+        let key = rangeKey(for: period)
+        var out: [ModelCost] = []
+
+        let claude = usage.claude.ranges.get(key)
+        for model in claude.models where model.total > 0 || model.cost > 0 {
+            out.append(modelCost(name: model.name, cost: model.cost, tool: "claude",
+                                 input: model.in, out: model.out, cr: model.cr, cw: model.cw,
+                                 tokens: model.total))
+        }
+
+        let codex = usage.codex.ranges.get(key)
+        let codexTokens = codex.in + codex.cached + codex.out + codex.reason
+        if codexTokens > 0 || codex.cost > 0 {
+            out.append(modelCost(name: "GPT-5.5 (Codex)", cost: codex.cost, tool: "codex",
+                                 input: codex.in + codex.cached, out: codex.out,
+                                 reason: codex.reason, tokens: codexTokens))
+        }
+
+        let gemini = usage.gemini.ranges.get(key)
+        for model in gemini.models {
+            let tokens = model.in + model.out + model.cached + model.thoughts
+            if tokens > 0 || model.cost > 0 {
+                out.append(modelCost(name: model.name, cost: model.cost, tool: "gemini",
+                                     input: model.in + model.cached, out: model.out,
+                                     reason: model.thoughts, tokens: tokens))
+            }
+        }
+
+        let grok = usage.grok.ranges.get(key)
+        let grokTokens = grok.ctx_used ?? grok.tokens
+        if grokTokens > 0 {
+            out.append(modelCost(name: usage.grok.model ?? "Grok CLI", cost: 0, tool: "grok", tokens: grokTokens))
+        }
+
+        let qoder = usage.qoder.ranges.get(key)
+        let qoderTokens = qoder.in + qoder.cached + qoder.out
+        if qoderTokens > 0 {
+            out.append(modelCost(name: usage.qoder.model ?? "Qoder IDE", cost: 0, tool: "qoder",
+                                 input: qoder.in + qoder.cached, out: qoder.out, tokens: qoderTokens))
+        }
+
+        appendTokenModels(usage.hermes.ranges.get(key).models, tool: "hermes", suffix: "Hermes", to: &out)
+        appendTokenModels(usage.openclaw.ranges.get(key).models, tool: "openclaw", suffix: "OpenClaw", to: &out)
+        appendTokenModels(usage.pi.ranges.get(key).models, tool: "pi", suffix: "Pi", to: &out)
+        appendTokenModels(usage.opencode.ranges.get(key).models, tool: "opencode", suffix: "OpenCode", to: &out)
+
+        return out.sorted {
+            if ($0.tokens ?? 0) != ($1.tokens ?? 0) { return ($0.tokens ?? 0) > ($1.tokens ?? 0) }
+            return $0.cost > $1.cost
+        }
+    }
+
+    static func appendTokenModels(_ models: [TokenModelStat], tool: String, suffix: String, to out: inout [ModelCost]) {
+        for model in models {
+            let tokens = tokenModelTotal(model)
+            if tokens > 0 || model.cost > 0 {
+                out.append(modelCost(name: "\(model.name) (\(suffix))", cost: model.cost, tool: tool,
+                                     input: model.in, out: model.out, cr: model.cr, cw: model.cw,
+                                     reason: model.reason, tokens: tokens))
+            }
+        }
+    }
+
+    static func modelCost(name: String, cost: Double, tool: String, input: Int? = nil, out: Int? = nil,
+                          cr: Int? = nil, cw: Int? = nil, reason: Int? = nil, tokens: Int? = nil) -> ModelCost {
+        let inputTokens = input ?? 0
+        let outputTokens = out ?? 0
+        let cacheReadTokens = cr ?? 0
+        let cacheWriteTokens = cw ?? 0
+        let reasonTokens = reason ?? 0
+        let total = tokens ?? (inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens + reasonTokens)
+        let outK = Double(outputTokens) / 1000
+        let costPerK = outK > 0 ? cost / outK : 0
+        let outRatio = total > 0 ? Double(outputTokens) / Double(total) * 100 : 0
+        return ModelCost(name: name, cost: cost, tool: tool, input: input, out: out,
+                         cr: cr, cw: cw, reason: reason, tokens: total,
+                         cost_per_k: costPerK, out_ratio: outRatio)
+    }
+
+    static func usageTotalTokens(_ usage: Usage, _ key: RangeKey) -> Int {
+        let claude = usage.claude.ranges.get(key)
+        let codex = usage.codex.ranges.get(key)
+        let gemini = usage.gemini.ranges.get(key)
+        let grok = usage.grok.ranges.get(key)
+        let qoder = usage.qoder.ranges.get(key)
+        return claude.in + claude.out + claude.cr + claude.cw
+            + codex.in + codex.cached + codex.out + codex.reason
+            + gemini.in + gemini.cached + gemini.out + gemini.thoughts
+            + (grok.ctx_used ?? grok.tokens)
+            + qoder.in + qoder.cached + qoder.out
+            + hermesTotal(usage.hermes.ranges.get(key))
+            + openClawTotal(usage.openclaw.ranges.get(key))
+            + tokenUsageTotal(usage.pi.ranges.get(key))
+            + tokenUsageTotal(usage.opencode.ranges.get(key))
+    }
+
+    static func usageTotalCost(_ usage: Usage, _ key: RangeKey) -> Double {
+        usage.claude.ranges.get(key).cost
+            + usage.codex.ranges.get(key).cost
+            + usage.gemini.ranges.get(key).cost
+            + usage.hermes.ranges.get(key).cost
+            + usage.openclaw.ranges.get(key).cost
+            + usage.pi.ranges.get(key).cost
+            + usage.opencode.ranges.get(key).cost
+    }
+
+    static func tokenUsageTotal(_ r: TokenUsageRange) -> Int {
+        r.in + r.out + r.cr + r.cw + r.reason
+    }
+
+    static func hermesTotal(_ r: HermesRange) -> Int {
+        r.in + r.out + r.cr + r.cw + r.reason
+    }
+
+    static func openClawTotal(_ r: OpenClawRange) -> Int {
+        r.in + r.out + r.cr + r.cw
+    }
+
+    static func tokenModelTotal(_ m: TokenModelStat) -> Int {
+        m.in + m.out + m.cr + m.cw + m.reason
     }
 
     static func runScript(_ args: [String]) -> Data {
