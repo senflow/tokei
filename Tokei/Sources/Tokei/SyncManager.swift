@@ -99,6 +99,8 @@ final class SyncManager {
             var d = dst.get(k), s = src.get(k)
             d.in += s.in; d.out += s.out; d.cr += s.cr; d.cw += s.cw
             d.cost += s.cost; d.sessions += s.sessions
+            d.hit = hitRate(cached: d.cr, input: d.in, cacheWrite: d.cw)
+            mergeClaudeModels(&d.models, s.models)
             dst.set(k, d)
         }
     }
@@ -108,6 +110,7 @@ final class SyncManager {
             var d = dst.get(k), s = src.get(k)
             d.in += s.in; d.out += s.out; d.cached += s.cached
             d.reason += s.reason; d.cost += s.cost; d.sessions += s.sessions
+            d.hit = hitRate(cached: d.cached, input: d.in)
             dst.set(k, d)
         }
     }
@@ -117,6 +120,8 @@ final class SyncManager {
             var d = dst.get(k), s = src.get(k)
             d.in += s.in; d.out += s.out; d.cached += s.cached
             d.thoughts += s.thoughts; d.cost += s.cost; d.sessions += s.sessions
+            d.hit = hitRate(cached: d.cached, input: d.in)
+            mergeGeminiModels(&d.models, s.models)
             dst.set(k, d)
         }
     }
@@ -124,7 +129,20 @@ final class SyncManager {
     private static func mergeRanges(_ dst: inout GrokRanges, _ src: GrokRanges) {
         for k in RangeKey.allCases {
             var d = dst.get(k), s = src.get(k)
+            let originalSessions = d.sessions
             d.tokens += s.tokens; d.sessions += s.sessions
+            d.turns = add(d.turns, s.turns)
+            d.tools = add(d.tools, s.tools)
+            d.duration = add(d.duration, s.duration)
+            d.ctx_used = add(d.ctx_used, s.ctx_used)
+            d.ctx_window = add(d.ctx_window, s.ctx_window)
+            d.errors = add(d.errors, s.errors)
+            d.cancellations = add(d.cancellations, s.cancellations)
+            d.ttft = weightedAverage(d.ttft, originalSessions, s.ttft, s.sessions)
+            d.response = weightedAverage(d.response, originalSessions, s.response, s.sessions)
+            let ctxUsed = d.ctx_used ?? 0
+            let ctxWindow = d.ctx_window ?? 0
+            d.ctx = ctxWindow > 0 ? Double(ctxUsed) / Double(ctxWindow) * 100 : 0
             dst.set(k, d)
         }
     }
@@ -132,9 +150,11 @@ final class SyncManager {
     private static func mergeRanges(_ dst: inout QoderRanges, _ src: QoderRanges) {
         for k in RangeKey.allCases {
             var d = dst.get(k), s = src.get(k)
+            let originalSessions = d.sessions
             d.sessions += s.sessions
             d.calls += s.calls; d.sub_agents += s.sub_agents
             d.turns += s.turns; d.duration += s.duration
+            d.ctx = weightedAverage(d.ctx, originalSessions, s.ctx, s.sessions)
             dst.set(k, d)
         }
     }
@@ -142,10 +162,12 @@ final class SyncManager {
     private static func mergeRanges(_ dst: inout QoderIdeRanges, _ src: QoderIdeRanges) {
         for k in RangeKey.allCases {
             var d = dst.get(k), s = src.get(k)
+            let originalSessions = d.sessions
             d.in += s.in; d.out += s.out; d.cached += s.cached
             d.sessions += s.sessions
             d.sub_agents += s.sub_agents; d.calls += s.calls
             d.messages += s.messages; d.duration += s.duration
+            d.ctx = weightedAverage(d.ctx, originalSessions, s.ctx, s.sessions)
             dst.set(k, d)
         }
     }
@@ -155,6 +177,8 @@ final class SyncManager {
             var d = dst.get(k), s = src.get(k)
             d.in += s.in; d.out += s.out; d.cr += s.cr; d.cw += s.cw
             d.reason += s.reason; d.cost += s.cost; d.sessions += s.sessions
+            d.hit = hitRate(cached: d.cr, input: d.in, cacheWrite: d.cw)
+            mergeTokenModels(&d.models, s.models)
             dst.set(k, d)
         }
     }
@@ -165,6 +189,8 @@ final class SyncManager {
             d.tasks += s.tasks; d.completed += s.completed; d.failed += s.failed
             d.in += s.in; d.out += s.out; d.cr += s.cr; d.cw += s.cw
             d.cost += s.cost; d.sessions += s.sessions
+            d.hit = hitRate(cached: d.cr, input: d.in, cacheWrite: d.cw)
+            mergeTokenModels(&d.models, s.models)
             dst.set(k, d)
         }
     }
@@ -174,8 +200,78 @@ final class SyncManager {
             var d = dst.get(k), s = src.get(k)
             d.in += s.in; d.out += s.out; d.cr += s.cr; d.cw += s.cw
             d.reason += s.reason; d.cost += s.cost; d.sessions += s.sessions
+            d.hit = hitRate(cached: d.cr, input: d.in, cacheWrite: d.cw)
+            mergeTokenModels(&d.models, s.models)
             dst.set(k, d)
         }
+    }
+
+    private static func hitRate(cached: Int, input: Int, cacheWrite: Int = 0) -> Double {
+        let denom = cached + input + cacheWrite
+        return denom > 0 ? Double(cached) / Double(denom) * 100 : 0
+    }
+
+    private static func add(_ lhs: Int?, _ rhs: Int?) -> Int? {
+        let sum = (lhs ?? 0) + (rhs ?? 0)
+        return sum > 0 ? sum : 0
+    }
+
+    private static func weightedAverage(_ lhs: Int?, _ lhsWeight: Int, _ rhs: Int?, _ rhsWeight: Int) -> Int? {
+        let totalWeight = lhsWeight + rhsWeight
+        guard totalWeight > 0 else { return 0 }
+        return (((lhs ?? 0) * lhsWeight) + ((rhs ?? 0) * rhsWeight)) / totalWeight
+    }
+
+    private static func weightedAverage(_ lhs: Double, _ lhsWeight: Int, _ rhs: Double, _ rhsWeight: Int) -> Double {
+        let totalWeight = lhsWeight + rhsWeight
+        guard totalWeight > 0 else { return 0 }
+        return ((lhs * Double(lhsWeight)) + (rhs * Double(rhsWeight))) / Double(totalWeight)
+    }
+
+    private static func mergeClaudeModels(_ dst: inout [ClaudeModelStat], _ src: [ClaudeModelStat]) {
+        for m in src {
+            if let idx = dst.firstIndex(where: { $0.name == m.name }) {
+                dst[idx].in += m.in
+                dst[idx].out += m.out
+                dst[idx].cr += m.cr
+                dst[idx].cw += m.cw
+                dst[idx].cost += m.cost
+            } else {
+                dst.append(m)
+            }
+        }
+        dst.sort { $0.cost > $1.cost }
+    }
+
+    private static func mergeGeminiModels(_ dst: inout [GeminiModelStat], _ src: [GeminiModelStat]) {
+        for m in src {
+            if let idx = dst.firstIndex(where: { $0.name == m.name }) {
+                dst[idx].in += m.in
+                dst[idx].out += m.out
+                dst[idx].cached += m.cached
+                dst[idx].thoughts += m.thoughts
+                dst[idx].cost += m.cost
+            } else {
+                dst.append(m)
+            }
+        }
+        dst.sort { $0.cost > $1.cost }
+    }
+
+    private static func mergeTokenModels(_ dst: inout [TokenModelStat], _ src: [TokenModelStat]) {
+        for m in src {
+            if let idx = dst.firstIndex(where: { $0.name == m.name }) {
+                dst[idx].in += m.in
+                dst[idx].out += m.out
+                dst[idx].cr += m.cr
+                dst[idx].cw += m.cw
+                dst[idx].reason += m.reason
+                dst[idx].cost += m.cost
+            } else {
+                dst.append(m)
+            }
+        }
+        dst.sort { $0.cost > $1.cost }
     }
 
     // MARK: - Git sync
