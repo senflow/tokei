@@ -69,12 +69,12 @@ final class Updater: NSObject, ObservableObject, URLSessionDownloadDelegate {
                 guard let self = self else { return }
                 guard let data = data,
                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                      let tag = json["tag_name"] as? String else {
+                      let tag = (json["tag_name"] ?? json["version"]) as? String else {
                     self.tryCheck(index: index + 1)
                     return
                 }
                 let dlURL: URL? = {
-                    if let u = json["download_url"] as? String { return URL(string: u) }
+                    if let u = (json["download_url"] ?? json["url"]) as? String { return URL(string: u) }
                     if let assets = json["assets"] as? [[String: Any]],
                        let first = assets.first,
                        let u = first["browser_download_url"] as? String { return URL(string: u) }
