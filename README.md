@@ -149,6 +149,11 @@ echo '{"sync_dir":"~/.tokei/sync","device_id":"'$(hostname -s)'"}' > ~/.tokei/co
 
 ## 更新日志
 
+### v1.0.7
+- feat: Qoder 拆分为 CLI 和 IDE 两张独立卡片
+- feat: Qoder IDE 数据采集（支持 VS Code / JetBrains 插件用量）
+- fix: Qoder 分拆后数据模型和同步适配
+
 ### v1.0.6
 - perf: 脚本性能优化 10 倍（6.5s→0.6s），CPU 占用从 ~22% 降至 ~1%
 - fix: 首次加载失败自动重试 3 次，不再直接显示错误
