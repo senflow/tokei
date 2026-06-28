@@ -90,6 +90,7 @@ _FAMILY = [
     ("gpt-5",    "openai/gpt-5.5"),
     ("qwen",     "qwen/qwen3.7-max"),
     ("deepseek", "deepseek/deepseek-v4-pro"),
+    ("glm",      "z-ai/glm-5.2"),
 ]
 
 
@@ -114,6 +115,8 @@ def _normalize(model: str):
         return "qwen/" + m
     if m.startswith("deepseek"):
         return "deepseek/" + m
+    if m.startswith("glm"):
+        return "z-ai/" + m
     return m
 
 
@@ -375,10 +378,13 @@ def _merge_token_day(bucket, day, session=None):
 
 
 def _format_token_models(models):
-    return [{"name": nice_model(n), "in": v.get("in", 0), "out": v.get("out", 0),
-             "cr": v.get("cr", 0), "cw": v.get("cw", 0), "reason": v.get("reason", 0),
-             "cost": v.get("cost", 0)}
-            for n, v in sorted(models.items(), key=lambda kv: -kv[1].get("cost", 0))]
+    result = []
+    for n, v in sorted(models.items(), key=lambda kv: -kv[1].get("cost", 0)):
+        p = _raw_price(n)
+        result.append({"name": nice_model(n), "in": v.get("in", 0), "out": v.get("out", 0),
+                        "cr": v.get("cr", 0), "cw": v.get("cw", 0), "reason": v.get("reason", 0),
+                        "cost": v.get("cost", 0), "pin": p["in"], "pout": p["out"]})
+    return result
 
 
 def _safe_scan(name, fn, fallback, errors):
@@ -423,6 +429,7 @@ def scan_claude(bounds, cache):
         if not entry or entry.get("sig") != sig:
             days = {}
             hours = [0] * 24
+            dh = set()
             proj = None
             seen_mids = set()
             try:
@@ -450,11 +457,12 @@ def scan_claude(bounds, cache):
                         mm["cr"] += u["cr"]; mm["cw"] += u["cw"]; mm["cost"] += u["cost"]
                         # Wrapped 用:小时分布 / 项目 / 会话跨度
                         hours[dt.hour] += u["in"] + u["out"] + u["cr"] + u["cw"]
+                        dh.add(f"{dk}:{dt.hour}")
                         if proj is None and u.get("cwd"):
                             proj = u["cwd"]
             except OSError:
                 continue
-            fc[f] = {"sig": sig, "days": days, "hours": hours, "proj": proj}
+            fc[f] = {"sig": sig, "days": days, "hours": hours, "dh": sorted(dh), "proj": proj}
 
     for p in stale:
         fc.pop(p, None)
@@ -1785,7 +1793,44 @@ def compute():
     }
     if errors:
         result["_errors"] = errors
+    _recalc_costs(result)
     return result
+
+
+def _recalc_costs(result):
+    """用本地最新价格表重算所有模型成本,修正历史/同步数据中的价格偏差。"""
+    for tool_key in ("claude", "gemini", "pi", "opencode", "hermes", "openclaw"):
+        tool = result.get(tool_key)
+        if not tool or "ranges" not in tool:
+            continue
+        ranges = tool["ranges"]
+        for rk in RANGE_KEYS:
+            r = ranges.get(rk)
+            if not r or "models" not in r:
+                continue
+            total_cost = 0.0
+            for m in r["models"]:
+                name = m.get("name", "")
+                p = _raw_price(name)
+                ti = m.get("in", 0)
+                to = m.get("out", 0)
+                if tool_key == "claude":
+                    cr = m.get("cr", 0)
+                    cw = m.get("cw", 0)
+                    pf = price_for(name)
+                    cost = ti / 1e6 * pf["in"] + to / 1e6 * pf["out"] + cr / 1e6 * pf["cache_read"] + cw / 1e6 * pf["write5m"]
+                elif tool_key == "gemini":
+                    cached = m.get("cached", 0)
+                    cost = ti / 1e6 * p["in"] + to / 1e6 * p["out"] + cached / 1e6 * p["cache_read"]
+                else:
+                    cr = m.get("cr", 0)
+                    cw = m.get("cw", 0)
+                    cost = ti / 1e6 * p["in"] + to / 1e6 * p["out"] + cr / 1e6 * p["cache_read"] + cw / 1e6 * p["cache_write"]
+                m["cost"] = round(cost, 6)
+                m["pin"] = p["in"]
+                m["pout"] = p["out"]
+                total_cost += cost
+            r["cost"] = round(total_cost, 6)
 
 
 _TOKEI_CONFIG = os.path.join(HOME, ".tokei", "config.json")
@@ -1824,6 +1869,18 @@ def main_json():
                     json.dump(d, f, ensure_ascii=False)
             except OSError:
                 pass
+            # 用本地价格表修正其他设备的同步文件
+            for fn in os.listdir(sync_dir):
+                if fn.endswith(".json") and fn != f"{device_id}.json":
+                    peer_path = os.path.join(sync_dir, fn)
+                    try:
+                        with open(peer_path) as f:
+                            peer = json.load(f)
+                        _recalc_costs(peer)
+                        with open(peer_path, "w") as f:
+                            json.dump(peer, f, ensure_ascii=False)
+                    except Exception:
+                        pass
 
 
 def main():
@@ -2305,6 +2362,7 @@ def build_wrapped(period="all", refresh=True):
     proj_tok = {}
     day_projs = {}
     model_tok = {}
+    all_day_hours = set()
     total_tokens = 0
     total_cost = 0.0
 
@@ -2317,6 +2375,10 @@ def build_wrapped(period="all", refresh=True):
         if h and len(h) == 24:
             for i in range(24):
                 hours[i] += h[i]
+        for dh_item in entry.get("dh", []):
+            dk_part = dh_item.rsplit(":", 1)[0] if ":" in dh_item else ""
+            if not cutoff or dk_part >= cutoff:
+                all_day_hours.add(dh_item)
         proj_path = entry.get("proj") or ""
         proj = os.path.basename(proj_path.rstrip("/")) or "?"
         for dk, day in entry.get("days", {}).items():
@@ -2514,6 +2576,26 @@ def build_wrapped(period="all", refresh=True):
     active_hours = sum(1 for h in hours if h > 0)
     if active_hours >= 24:
         add("clock.badge.checkmark.fill", "永动机", "24h 每个时段都有活跃", "purple")
+    # Loop 成就: 连续 N 天每天 24h 全时段有 agent 活跃
+    day_hour_map = {}
+    for item in all_day_hours:
+        dk, h = item.rsplit(":", 1)
+        day_hour_map.setdefault(dk, set()).add(int(h))
+    full_days = sorted(dk for dk, hs in day_hour_map.items() if len(hs) >= 24)
+    loop_streak = 0
+    if full_days:
+        cur = 1
+        for i in range(1, len(full_days)):
+            if (date.fromisoformat(full_days[i]) - date.fromisoformat(full_days[i - 1])).days == 1:
+                cur += 1
+            else:
+                loop_streak = max(loop_streak, cur)
+                cur = 1
+        loop_streak = max(loop_streak, cur)
+    if loop_streak >= 30:
+        add("repeat.circle.fill", "Loop滴神", f"连续 {loop_streak} 天 24/7", "purple")
+    elif loop_streak >= 3:
+        add("repeat.circle", "Loop Engineering !!", f"连续 {loop_streak} 天 24/7", "purple")
     if night_share >= 5:
         add("moon.stars.fill", "夜猫子", f"{night_share:.0f}% 在凌晨", "purple")
     morning_share = (sum(hours[5:9]) / hours_total * 100) if hours_total else 0

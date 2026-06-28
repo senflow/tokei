@@ -149,6 +149,12 @@ echo '{"sync_dir":"~/.tokei/sync","device_id":"'$(hostname -s)'"}' > ~/.tokei/co
 
 ## 更新日志
 
+### v1.0.8
+- feat: 点击模型行展开详情（输入/输出/缓存读写/命中率/单价）
+- feat: 回顾新增「Loop Engineering !!」「Loop滴神」成就（连续 24/7 活跃）
+- fix: GLM 5.2 价格映射修复（不再按 Opus 价计算）
+- fix: 同步数据成本自动修正（本地价格表重算对端模型成本）
+
 ### v1.0.7
 - feat: Qoder 拆分为 CLI 和 IDE 两张独立卡片
 - feat: Qoder IDE 数据采集（支持 VS Code / JetBrains 插件用量）

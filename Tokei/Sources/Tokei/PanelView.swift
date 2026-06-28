@@ -9,6 +9,7 @@ struct PanelView: View {
     @State private var geminiModelsOpen = false
     @State private var piModelsOpen = false
     @State private var openCodeModelsOpen = false
+    @State private var expandedModels: Set<String> = []
     @State private var mode: PanelMode = .cards
     @State private var trailProjects: [TrailProject]?
     enum PanelMode { case cards, dashboard, projects, settings }
@@ -267,7 +268,8 @@ struct PanelView: View {
                 let claudeRows = r.models.filter { $0.name != "合成" }.map { m in
                     let denom = m.cr + m.cw + m.in
                     let hit = denom > 0 ? Double(m.cr) / Double(denom) * 100 : 0
-                    return ModelRow(name: m.name, pin: m.pin, pout: m.pout, cost: m.cost, total: m.total, hit: hit)
+                    return ModelRow(name: m.name, pin: m.pin, pout: m.pout, cost: m.cost, total: m.total, hit: hit,
+                                   tokIn: m.in, tokOut: m.out, tokCR: m.cr, tokCW: m.cw)
                 }
                 if !claudeRows.isEmpty {
                     modelDisclosure(claudeRows, open: $claudeModelsOpen, tint: Theme.claude)
@@ -350,7 +352,8 @@ struct PanelView: View {
                         let total = m.in + m.out + m.cached + m.thoughts
                         let denom = m.cached + m.in
                         let hit = denom > 0 ? Double(m.cached) / Double(denom) * 100 : 0
-                        return ModelRow(name: m.name, pin: m.pin, pout: m.pout, cost: m.cost, total: total, hit: hit)
+                        return ModelRow(name: m.name, pin: m.pin, pout: m.pout, cost: m.cost, total: total, hit: hit,
+                                        tokIn: m.in, tokOut: m.out, tokCR: m.cached, tokCW: m.thoughts)
                     }
                     modelDisclosure(geminiRows, open: $geminiModelsOpen, tint: Theme.gemini)
                 }
@@ -626,6 +629,10 @@ struct PanelView: View {
         var cost: Double
         var total: Int = 0
         var hit: Double = 0
+        var tokIn: Int = 0
+        var tokOut: Int = 0
+        var tokCR: Int = 0
+        var tokCW: Int = 0
         var id: String { name }
     }
 
@@ -727,32 +734,52 @@ struct PanelView: View {
         }
         .buttonStyle(.plain)
         if open.wrappedValue {
-            VStack(alignment: .leading, spacing: 9) {
+            VStack(alignment: .leading, spacing: 6) {
                 Text("按模型 · \(sel.label)")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(Theme.tSecondary)
                 ForEach(models) { m in
                     let total = tokenModelTotal(m)
                     let hit = tokenModelHit(m)
-                    HStack(spacing: 7) {
-                        Circle().fill(tint.opacity(0.7)).frame(width: 5, height: 5)
-                        Text(m.name).font(.system(size: 11.5)).foregroundStyle(Theme.tPrimary)
-                            .lineLimit(1)
-                        Spacer(minLength: 4)
-                        Text(Fmt.human(total))
-                            .font(.system(size: 9.5, design: .monospaced))
-                            .foregroundStyle(Theme.tTertiary)
-                        if hit > 0 {
-                            Text(String(format: "%.0f%%", hit))
-                                .font(.system(size: 9.5, design: .monospaced))
-                                .foregroundStyle(Theme.tTertiary)
-                                .padding(.horizontal, 4).padding(.vertical, 1)
-                                .background(Capsule().fill(Color.primary.opacity(0.06)))
+                    let isExpanded = expandedModels.contains(m.id)
+                    VStack(alignment: .leading, spacing: 0) {
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                if isExpanded { expandedModels.remove(m.id) }
+                                else { expandedModels.insert(m.id) }
+                            }
+                        } label: {
+                            HStack(spacing: 7) {
+                                Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                                    .font(.system(size: 7, weight: .bold))
+                                    .foregroundStyle(Theme.tTertiary)
+                                    .frame(width: 8)
+                                Circle().fill(tint.opacity(0.7)).frame(width: 5, height: 5)
+                                Text(m.name).font(.system(size: 11.5)).foregroundStyle(Theme.tPrimary)
+                                    .lineLimit(1)
+                                Spacer(minLength: 4)
+                                Text(Fmt.human(total))
+                                    .font(.system(size: 9.5, design: .monospaced))
+                                    .foregroundStyle(Theme.tTertiary)
+                                if hit > 0 {
+                                    Text(String(format: "%.0f%%", hit))
+                                        .font(.system(size: 9.5, design: .monospaced))
+                                        .foregroundStyle(Theme.tTertiary)
+                                        .padding(.horizontal, 4).padding(.vertical, 1)
+                                        .background(Capsule().fill(Color.primary.opacity(0.06)))
+                                }
+                                if m.cost > 0 {
+                                    Text(String(format: "$%.2f", m.cost))
+                                        .font(.system(size: 11.5, weight: .semibold, design: .monospaced))
+                                        .foregroundStyle(Theme.tPrimary)
+                                }
+                            }
+                            .contentShape(Rectangle())
                         }
-                        if m.cost > 0 {
-                            Text(String(format: "$%.2f", m.cost))
-                                .font(.system(size: 11.5, weight: .semibold, design: .monospaced))
-                                .foregroundStyle(Theme.tPrimary)
+                        .buttonStyle(.plain)
+                        if isExpanded {
+                            modelDetailRow(tokIn: m.in, tokOut: m.out, tokCR: m.cr, tokCW: m.cw,
+                                           pin: m.pin, pout: m.pout, hit: hit, tint: tint)
                         }
                     }
                 }
@@ -783,37 +810,154 @@ struct PanelView: View {
         }
         .buttonStyle(.plain)
         if open.wrappedValue {
-            VStack(alignment: .leading, spacing: 9) {
+            VStack(alignment: .leading, spacing: 6) {
                 Text("按模型 · \(sel.label)")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(Theme.tSecondary)
                 ForEach(models) { m in
-                    HStack(spacing: 7) {
-                        Circle().fill(tint.opacity(0.7)).frame(width: 5, height: 5)
-                        Text(m.name).font(.system(size: 11.5)).foregroundStyle(Theme.tPrimary)
-                            .lineLimit(1)
-                        Spacer(minLength: 4)
-                        if m.total > 0 {
-                            Text(Fmt.human(m.total))
-                                .font(.system(size: 9.5, design: .monospaced))
-                                .foregroundStyle(Theme.tTertiary)
+                    let isExpanded = expandedModels.contains(m.id)
+                    VStack(alignment: .leading, spacing: 0) {
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                if isExpanded { expandedModels.remove(m.id) }
+                                else { expandedModels.insert(m.id) }
+                            }
+                        } label: {
+                            HStack(spacing: 7) {
+                                Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                                    .font(.system(size: 7, weight: .bold))
+                                    .foregroundStyle(Theme.tTertiary)
+                                    .frame(width: 8)
+                                Circle().fill(tint.opacity(0.7)).frame(width: 5, height: 5)
+                                Text(m.name).font(.system(size: 11.5)).foregroundStyle(Theme.tPrimary)
+                                    .lineLimit(1)
+                                Spacer(minLength: 4)
+                                if m.total > 0 {
+                                    Text(Fmt.human(m.total))
+                                        .font(.system(size: 9.5, design: .monospaced))
+                                        .foregroundStyle(Theme.tTertiary)
+                                }
+                                if m.hit > 0 {
+                                    Text(String(format: "%.0f%%", m.hit))
+                                        .font(.system(size: 9.5, design: .monospaced))
+                                        .foregroundStyle(Theme.tTertiary)
+                                        .padding(.horizontal, 4).padding(.vertical, 1)
+                                        .background(Capsule().fill(Color.primary.opacity(0.06)))
+                                }
+                                Text(String(format: "$%.2f", m.cost))
+                                    .font(.system(size: 11.5, weight: .semibold, design: .monospaced))
+                                    .foregroundStyle(Theme.tPrimary)
+                            }
+                            .contentShape(Rectangle())
                         }
-                        if m.hit > 0 {
-                            Text(String(format: "%.0f%%", m.hit))
-                                .font(.system(size: 9.5, design: .monospaced))
-                                .foregroundStyle(Theme.tTertiary)
-                                .padding(.horizontal, 4).padding(.vertical, 1)
-                                .background(Capsule().fill(Color.primary.opacity(0.06)))
+                        .buttonStyle(.plain)
+                        if isExpanded {
+                            modelDetailRow(tokIn: m.tokIn, tokOut: m.tokOut, tokCR: m.tokCR, tokCW: m.tokCW,
+                                           pin: m.pin, pout: m.pout, hit: m.hit, tint: tint)
                         }
-                        Text(String(format: "$%.2f", m.cost))
-                            .font(.system(size: 11.5, weight: .semibold, design: .monospaced))
-                            .foregroundStyle(Theme.tPrimary)
                     }
                 }
             }
             .padding(10)
             .background(RoundedRectangle(cornerRadius: 7, style: .continuous)
                 .fill(Color.primary.opacity(0.05)))
+        }
+    }
+
+    @ViewBuilder
+    func modelDetailRow(tokIn: Int, tokOut: Int, tokCR: Int, tokCW: Int,
+                         pin: Double, pout: Double, hit: Double = 0, tint: Color) -> some View {
+        let tagFont = Font.system(size: 9, weight: .medium, design: .monospaced)
+        let labelFont = Font.system(size: 8.5)
+        let bg = tint.opacity(0.08)
+        let border = tint.opacity(0.18)
+        HStack(spacing: 0) {
+            Spacer().frame(width: 20)
+            FlowLayout(spacing: 4) {
+                detailTag("↓ \(Fmt.human(tokIn))", label: "输入", tagFont: tagFont, labelFont: labelFont, bg: bg, border: border)
+                detailTag("↑ \(Fmt.human(tokOut))", label: "输出", tagFont: tagFont, labelFont: labelFont, bg: bg, border: border)
+                if tokCR > 0 {
+                    detailTag("⚡ \(Fmt.human(tokCR))", label: "缓存读", tagFont: tagFont, labelFont: labelFont, bg: bg, border: border)
+                }
+                if tokCW > 0 {
+                    detailTag("✎ \(Fmt.human(tokCW))", label: "缓存写", tagFont: tagFont, labelFont: labelFont, bg: bg, border: border)
+                }
+                if hit > 0 {
+                    HStack(spacing: 2) {
+                        Text("命中").font(labelFont).foregroundStyle(Theme.tTertiary)
+                        Text(String(format: "%.0f%%", hit)).font(tagFont).foregroundStyle(tint)
+                    }
+                    .padding(.horizontal, 6).padding(.vertical, 2.5)
+                    .background(Capsule().fill(bg))
+                    .overlay(Capsule().strokeBorder(border, lineWidth: 0.5))
+                }
+                HStack(spacing: 2) {
+                    Text("$").font(tagFont).foregroundStyle(tint)
+                    Text("\(String(format: "%.2g", pin))/\(String(format: "%.2g", pout))")
+                        .font(tagFont).foregroundStyle(tint)
+                }
+                .padding(.horizontal, 6).padding(.vertical, 2.5)
+                .background(Capsule().fill(tint.opacity(0.12)))
+                .overlay(Capsule().strokeBorder(tint.opacity(0.25), lineWidth: 0.5))
+            }
+        }
+        .padding(.top, 5).padding(.bottom, 2)
+        .transition(.opacity.combined(with: .move(edge: .top)))
+    }
+
+    func detailTag(_ value: String, label: String, tagFont: Font, labelFont: Font,
+                    bg: Color, border: Color) -> some View {
+        HStack(spacing: 3) {
+            Text(label).font(labelFont).foregroundStyle(Theme.tTertiary)
+            Text(value).font(tagFont).foregroundStyle(Theme.tSecondary)
+        }
+        .padding(.horizontal, 6).padding(.vertical, 2.5)
+        .background(Capsule().fill(bg))
+        .overlay(Capsule().strokeBorder(border, lineWidth: 0.5))
+    }
+
+    struct FlowLayout: Layout {
+        var spacing: CGFloat = 4
+        func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+            let rows = computeRows(proposal: proposal, subviews: subviews)
+            let height = rows.enumerated().reduce(CGFloat(0)) { acc, pair in
+                let rowHeight = pair.element.map { $0.size.height }.max() ?? 0
+                return acc + rowHeight + (pair.offset > 0 ? spacing : 0)
+            }
+            return CGSize(width: proposal.width ?? 0, height: height)
+        }
+        func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+            let rows = computeRows(proposal: proposal, subviews: subviews)
+            var y = bounds.minY
+            for row in rows {
+                let rowHeight = row.map { $0.size.height }.max() ?? 0
+                var x = bounds.minX
+                for item in row {
+                    item.subview.place(at: CGPoint(x: x, y: y + (rowHeight - item.size.height) / 2),
+                                       proposal: ProposedViewSize(item.size))
+                    x += item.size.width + spacing
+                }
+                y += rowHeight + spacing
+            }
+        }
+        private struct RowItem {
+            let subview: LayoutSubview
+            let size: CGSize
+        }
+        private func computeRows(proposal: ProposedViewSize, subviews: Subviews) -> [[RowItem]] {
+            let maxW = proposal.width ?? .infinity
+            var rows: [[RowItem]] = [[]]
+            var x: CGFloat = 0
+            for sv in subviews {
+                let size = sv.sizeThatFits(.unspecified)
+                if !rows[rows.count - 1].isEmpty && x + size.width > maxW {
+                    rows.append([])
+                    x = 0
+                }
+                rows[rows.count - 1].append(RowItem(subview: sv, size: size))
+                x += size.width + spacing
+            }
+            return rows
         }
     }
 

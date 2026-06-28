@@ -362,6 +362,8 @@ struct TokenModelStat: Codable, Identifiable {
     var cw: Int = 0
     var reason: Int = 0
     var cost: Double
+    var pin: Double = 0
+    var pout: Double = 0
     var id: String { name }
 
     init(from decoder: Decoder) throws {
@@ -373,6 +375,8 @@ struct TokenModelStat: Codable, Identifiable {
         cw = try c.decodeIfPresent(Int.self, forKey: .cw) ?? 0
         reason = try c.decodeIfPresent(Int.self, forKey: .reason) ?? 0
         cost = try c.decodeIfPresent(Double.self, forKey: .cost) ?? 0
+        pin = try c.decodeIfPresent(Double.self, forKey: .pin) ?? 0
+        pout = try c.decodeIfPresent(Double.self, forKey: .pout) ?? 0
     }
 }
 struct HermesRanges: Codable {
