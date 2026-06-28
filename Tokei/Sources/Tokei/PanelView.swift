@@ -350,7 +350,7 @@ struct PanelView: View {
         VStack(alignment: .leading, spacing: 11) {
             cardHeadPlain("Grok CLI", tint: Theme.grok)
             if r.sessions > 0 {
-                CostHeadline(value: Fmt.human(r.ctx_used ?? r.tokens), caption: "\(sel.label) 上下文", tint: Theme.grok)
+                CostHeadline(value: Fmt.human(r.ctx_used ?? r.tokens), caption: "\(sel.label) 总量", tint: Theme.grok)
                 metricGrid({
                     var items: [Metric] = [
                         .init("arrow.triangle.2.circlepath", "轮次", "\(r.turns ?? 0)"),
