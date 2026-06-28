@@ -4,7 +4,8 @@ import Combine
 
 final class Store: ObservableObject {
     @Published var usage: Usage?
-    @Published var localUsage: Usage?  // 本机数据（用于判断 active）
+    @Published var localUsage: Usage?
+    @Published var allDevicesUsage: Usage?
     @Published var lastUpdated: String = "加载中…"
     @Published var loadError: String?
     @Published var peers: [PeerDevice] = []
@@ -20,10 +21,17 @@ final class Store: ObservableObject {
 
     private var retryCount = 0
 
+    func applyDisplayMode(updateStatusTitle: Bool = true) {
+        usage = (syncEnabled && showAllDevices) ? (allDevicesUsage ?? localUsage) : localUsage
+        if updateStatusTitle {
+            (NSApp.delegate as? AppDelegate)?.updateStatusTitle()
+        }
+    }
+
     func refresh() {
         DataLoader.load { [weak self] u in
             guard let self = self else { return }
-            guard var local = u else {
+            guard let local = u else {
                 if self.usage == nil && self.retryCount < 3 {
                     self.retryCount += 1
                     self.lastUpdated = "加载中…(\(self.retryCount))"
@@ -37,15 +45,17 @@ final class Store: ObservableObject {
             }
             self.retryCount = 0
             self.loadError = nil
-            self.localUsage = local  // 保存本机数据（合并前）
-            if self.syncEnabled && self.showAllDevices {
+            self.localUsage = local
+            var allDevices = local
+            if self.syncEnabled {
                 let p = self.syncManager.loadPeers()
                 self.peers = p
-                if !p.isEmpty { local = SyncManager.merge(local: local, peers: p) }
+                if !p.isEmpty { allDevices = SyncManager.merge(local: local, peers: p) }
             } else {
                 self.peers = []
             }
-            self.usage = local
+            self.allDevicesUsage = allDevices
+            self.applyDisplayMode(updateStatusTitle: false)
             let f = DateFormatter(); f.dateFormat = "HH:mm:ss"
             self.lastUpdated = "更新 " + f.string(from: Date())
             (NSApp.delegate as? AppDelegate)?.updateStatusTitle()
