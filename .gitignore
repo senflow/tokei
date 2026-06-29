@@ -8,4 +8,4 @@ __pycache__/
 *.png
 tokei-article.md
 Tokei-feature/
-Tokei/.qoder/
+.qoder/
