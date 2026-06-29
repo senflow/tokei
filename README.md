@@ -149,6 +149,9 @@ echo '{"sync_dir":"~/.tokei/sync","device_id":"'$(hostname -s)'"}' > ~/.tokei/co
 
 ## 更新日志
 
+### v1.0.9
+- fix: 多设备同步按日期边界对齐，修正跨设备采集时差导致的 range 串台
+
 ### v1.0.8
 - feat: 点击模型行展开详情（输入/输出/缓存读写/命中率/单价）
 - feat: 回顾新增「Loop Engineering !!」「Loop滴神」成就（连续 24/7 活跃）
