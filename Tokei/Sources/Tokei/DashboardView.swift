@@ -500,7 +500,11 @@ struct DashboardView: View {
     }
 
     private func allDeviceWrapped(from usage: Usage, period: WrappedPeriod, daily scopedDaily: [DailyCost]) -> WrappedData {
-        let peerWrapped = peerDashboards().compactMap { $0.wrapped[period.rawValue] }
+        let peerWrapped = store.peers.compactMap { peer -> WrappedData? in
+            guard let dashboard = peer.dashboard,
+                  Self.rangeBoundsMatch(peer.rangeBounds, period: period) else { return nil }
+            return dashboard.wrapped[period.rawValue]
+        }
         var data = Self.wrappedData(from: usage, period: period, fallback: baseWrapped)
 
         data.hours = Self.sumArrays(([baseWrapped?.hours ?? []] + peerWrapped.map(\.hours)), count: 24)
@@ -523,6 +527,14 @@ struct DashboardView: View {
         data.first_day = firstCandidates.min() ?? data.first_day
         data.period = period.rawValue
         return data
+    }
+
+    static func rangeBoundsMatch(_ peerBounds: [String: RangeBoundary], period: WrappedPeriod) -> Bool {
+        if period == .all { return true }
+        let key = rangeKey(for: period)
+        guard let peer = peerBounds[key.rawValue],
+              let local = SyncManager.currentRangeBounds()[key] else { return false }
+        return peer == local
     }
 
     static func dashboardData(from usage: Usage, period: WrappedPeriod, fallback: DashboardData?) -> DashboardData {

@@ -200,6 +200,26 @@ def range_bounds():
             "last_week": last_week_start, "last_week_end": week, "month": month, "year": year}
 
 
+def range_boundaries():
+    """同步用:明确每个相对时间范围的日期边界,避免设备间按过期 range 误合并。"""
+    b = range_bounds()
+    next_month = (b["month"].replace(day=28) + timedelta(days=4)).replace(day=1)
+    next_year = b["year"].replace(year=b["year"].year + 1)
+
+    def day_s(dt):
+        return dt.date().isoformat()
+
+    return {
+        "today": {"start": day_s(b["today"]), "end": day_s(b["today"] + timedelta(days=1))},
+        "yesterday": {"start": day_s(b["yesterday"]), "end": day_s(b["today"])},
+        "week": {"start": day_s(b["week"]), "end": day_s(b["week"] + timedelta(days=7))},
+        "last_week": {"start": day_s(b["last_week"]), "end": day_s(b["week"])},
+        "month": {"start": day_s(b["month"]), "end": day_s(next_month)},
+        "year": {"start": day_s(b["year"]), "end": day_s(next_year)},
+        "all": {"start": None, "end": None},
+    }
+
+
 def classify(dt, b):
     """给定本地化 dt,返回它命中的区间 key 列表(今日同时属本周/本月/本年)。"""
     return classify_date(dt.date(), b)
@@ -1859,6 +1879,7 @@ def main_json():
             import time
             d["_device"] = device_id
             d["_ts"] = int(time.time())
+            d["_range_bounds"] = range_boundaries()
             d["_dashboard"] = {
                 "daily": build_daily_costs("all", refresh=False).get("daily", []),
                 "wrapped": {p: build_wrapped(p, refresh=False)

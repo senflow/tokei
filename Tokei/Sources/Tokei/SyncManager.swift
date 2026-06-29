@@ -13,11 +13,17 @@ struct PeerDevice: Identifiable {
     var lastSync: Date
     var usage: Usage
     var dashboard: PeerDashboardSnapshot?
+    var rangeBounds: [String: RangeBoundary]
 }
 
 struct PeerDashboardSnapshot: Codable {
     var daily: [DailyCost] = []
     var wrapped: [String: WrappedData] = [:]
+}
+
+struct RangeBoundary: Codable, Equatable {
+    var start: String?
+    var end: String?
 }
 
 final class SyncManager {
@@ -78,11 +84,24 @@ final class SyncManager {
                let dashboardData = try? JSONSerialization.data(withJSONObject: rawDashboard) {
                 dashboard = try? JSONDecoder().decode(PeerDashboardSnapshot.self, from: dashboardData)
             }
+            var rangeBounds: [String: RangeBoundary] = [:]
+            if let rawBounds = raw["_range_bounds"],
+               JSONSerialization.isValidJSONObject(rawBounds),
+               let boundsData = try? JSONSerialization.data(withJSONObject: rawBounds) {
+                rangeBounds = (try? JSONDecoder().decode([String: RangeBoundary].self, from: boundsData)) ?? [:]
+            }
+            if rangeBounds.isEmpty {
+                rangeBounds = Self.currentRangeBounds(now: Date(timeIntervalSince1970: TimeInterval(ts)))
+                    .reduce(into: [String: RangeBoundary]()) { out, item in
+                        out[item.key.rawValue] = item.value
+                    }
+            }
             peers.append(PeerDevice(
                 deviceId: deviceId,
                 lastSync: Date(timeIntervalSince1970: TimeInterval(ts)),
                 usage: usage,
-                dashboard: dashboard
+                dashboard: dashboard,
+                rangeBounds: rangeBounds
             ))
         }
         return peers
@@ -93,56 +112,109 @@ final class SyncManager {
     static func merge(local: Usage, peers: [PeerDevice]) -> Usage {
         var u = local
         for peer in peers {
-            mergeRanges(&u.claude.ranges, peer.usage.claude.ranges)
-            mergeRanges(&u.codex.ranges, peer.usage.codex.ranges)
-            mergeRanges(&u.gemini.ranges, peer.usage.gemini.ranges)
-            mergeRanges(&u.grok.ranges, peer.usage.grok.ranges)
+            let pairs = rangePairs(for: peer)
+            mergeRanges(&u.claude.ranges, peer.usage.claude.ranges, pairs)
+            mergeRanges(&u.codex.ranges, peer.usage.codex.ranges, pairs)
+            mergeRanges(&u.gemini.ranges, peer.usage.gemini.ranges, pairs)
+            mergeRanges(&u.grok.ranges, peer.usage.grok.ranges, pairs)
             u.grok.model = mergeModelName(u.grok.model, peer.usage.grok.model)
-            mergeRanges(&u.qoderwork.ranges, peer.usage.qoderwork.ranges)
-            mergeRanges(&u.qoder.ranges, peer.usage.qoder.ranges)
-            mergeRanges(&u.hermes.ranges, peer.usage.hermes.ranges)
-            mergeRanges(&u.openclaw.ranges, peer.usage.openclaw.ranges)
-            mergeRanges(&u.pi.ranges, peer.usage.pi.ranges)
-            mergeRanges(&u.opencode.ranges, peer.usage.opencode.ranges)
+            mergeRanges(&u.qoderwork.ranges, peer.usage.qoderwork.ranges, pairs)
+            mergeRanges(&u.qoder.ranges, peer.usage.qoder.ranges, pairs)
+            mergeRanges(&u.hermes.ranges, peer.usage.hermes.ranges, pairs)
+            mergeRanges(&u.openclaw.ranges, peer.usage.openclaw.ranges, pairs)
+            mergeRanges(&u.pi.ranges, peer.usage.pi.ranges, pairs)
+            mergeRanges(&u.opencode.ranges, peer.usage.opencode.ranges, pairs)
         }
         return u
     }
 
-    private static func mergeRanges(_ dst: inout ClaudeRanges, _ src: ClaudeRanges) {
-        for k in RangeKey.allCases {
-            var d = dst.get(k), s = src.get(k)
+    private static func rangePairs(for peer: PeerDevice, now: Date = Date()) -> [(src: RangeKey, dst: RangeKey)] {
+        let local = currentRangeBounds(now: now)
+        var pairs: [(src: RangeKey, dst: RangeKey)] = []
+        for src in RangeKey.allCases {
+            guard let peerBoundary = peer.rangeBounds[src.rawValue] else { continue }
+            if src == .all {
+                pairs.append((.all, .all))
+                continue
+            }
+            if let dst = RangeKey.allCases.first(where: { local[$0] == peerBoundary }) {
+                pairs.append((src, dst))
+            }
+        }
+        return pairs
+    }
+
+    static func currentRangeBounds(now: Date = Date()) -> [RangeKey: RangeBoundary] {
+        let cal = Calendar.current
+        let today = cal.startOfDay(for: now)
+        let yesterday = cal.date(byAdding: .day, value: -1, to: today) ?? today
+        let localWeek = weekStart(for: today, calendar: cal)
+        let localLastWeek = cal.date(byAdding: .day, value: -7, to: localWeek) ?? localWeek
+        let monthStart = cal.date(from: cal.dateComponents([.year, .month], from: today)) ?? today
+        let nextMonth = cal.date(byAdding: DateComponents(month: 1), to: monthStart) ?? monthStart
+        let yearStart = cal.date(from: cal.dateComponents([.year], from: today)) ?? today
+        let nextYear = cal.date(byAdding: DateComponents(year: 1), to: yearStart) ?? yearStart
+
+        return [
+            .today: RangeBoundary(start: dayString(today), end: dayString(cal.date(byAdding: .day, value: 1, to: today) ?? today)),
+            .yesterday: RangeBoundary(start: dayString(yesterday), end: dayString(today)),
+            .week: RangeBoundary(start: dayString(localWeek), end: dayString(cal.date(byAdding: .day, value: 7, to: localWeek) ?? localWeek)),
+            .lastWeek: RangeBoundary(start: dayString(localLastWeek), end: dayString(localWeek)),
+            .month: RangeBoundary(start: dayString(monthStart), end: dayString(nextMonth)),
+            .year: RangeBoundary(start: dayString(yearStart), end: dayString(nextYear)),
+            .all: RangeBoundary(start: nil, end: nil),
+        ]
+    }
+
+    private static func weekStart(for date: Date, calendar cal: Calendar) -> Date {
+        let weekday = cal.component(.weekday, from: date)
+        let daysFromMonday = (weekday + 5) % 7
+        return cal.date(byAdding: .day, value: -daysFromMonday, to: date) ?? date
+    }
+
+    private static func dayString(_ date: Date) -> String {
+        let fmt = DateFormatter()
+        fmt.calendar = Calendar.current
+        fmt.locale = Locale(identifier: "en_US_POSIX")
+        fmt.dateFormat = "yyyy-MM-dd"
+        return fmt.string(from: date)
+    }
+
+    private static func mergeRanges(_ dst: inout ClaudeRanges, _ src: ClaudeRanges, _ pairs: [(src: RangeKey, dst: RangeKey)]) {
+        for pair in pairs {
+            var d = dst.get(pair.dst), s = src.get(pair.src)
             d.in += s.in; d.out += s.out; d.cr += s.cr; d.cw += s.cw
             d.cost += s.cost; d.sessions += s.sessions
             d.hit = hitRate(cached: d.cr, input: d.in, cacheWrite: d.cw)
             mergeClaudeModels(&d.models, s.models)
-            dst.set(k, d)
+            dst.set(pair.dst, d)
         }
     }
 
-    private static func mergeRanges(_ dst: inout CodexRanges, _ src: CodexRanges) {
-        for k in RangeKey.allCases {
-            var d = dst.get(k), s = src.get(k)
+    private static func mergeRanges(_ dst: inout CodexRanges, _ src: CodexRanges, _ pairs: [(src: RangeKey, dst: RangeKey)]) {
+        for pair in pairs {
+            var d = dst.get(pair.dst), s = src.get(pair.src)
             d.in += s.in; d.out += s.out; d.cached += s.cached
             d.reason += s.reason; d.cost += s.cost; d.sessions += s.sessions
             d.hit = hitRate(cached: d.cached, input: d.in)
-            dst.set(k, d)
+            dst.set(pair.dst, d)
         }
     }
 
-    private static func mergeRanges(_ dst: inout GeminiRanges, _ src: GeminiRanges) {
-        for k in RangeKey.allCases {
-            var d = dst.get(k), s = src.get(k)
+    private static func mergeRanges(_ dst: inout GeminiRanges, _ src: GeminiRanges, _ pairs: [(src: RangeKey, dst: RangeKey)]) {
+        for pair in pairs {
+            var d = dst.get(pair.dst), s = src.get(pair.src)
             d.in += s.in; d.out += s.out; d.cached += s.cached
             d.thoughts += s.thoughts; d.cost += s.cost; d.sessions += s.sessions
             d.hit = hitRate(cached: d.cached, input: d.in)
             mergeGeminiModels(&d.models, s.models)
-            dst.set(k, d)
+            dst.set(pair.dst, d)
         }
     }
 
-    private static func mergeRanges(_ dst: inout GrokRanges, _ src: GrokRanges) {
-        for k in RangeKey.allCases {
-            var d = dst.get(k), s = src.get(k)
+    private static func mergeRanges(_ dst: inout GrokRanges, _ src: GrokRanges, _ pairs: [(src: RangeKey, dst: RangeKey)]) {
+        for pair in pairs {
+            var d = dst.get(pair.dst), s = src.get(pair.src)
             let originalLatencyWeight = max(d.turns ?? 0, d.sessions)
             let sourceLatencyWeight = max(s.turns ?? 0, s.sessions)
             d.tokens += s.tokens; d.sessions += s.sessions
@@ -158,66 +230,66 @@ final class SyncManager {
             let ctxUsed = d.ctx_used ?? 0
             let ctxWindow = d.ctx_window ?? 0
             d.ctx = ctxWindow > 0 ? Double(ctxUsed) / Double(ctxWindow) * 100 : 0
-            dst.set(k, d)
+            dst.set(pair.dst, d)
         }
     }
 
-    private static func mergeRanges(_ dst: inout QoderRanges, _ src: QoderRanges) {
-        for k in RangeKey.allCases {
-            var d = dst.get(k), s = src.get(k)
+    private static func mergeRanges(_ dst: inout QoderRanges, _ src: QoderRanges, _ pairs: [(src: RangeKey, dst: RangeKey)]) {
+        for pair in pairs {
+            var d = dst.get(pair.dst), s = src.get(pair.src)
             let originalSessions = d.sessions
             d.sessions += s.sessions
             d.calls += s.calls; d.sub_agents += s.sub_agents
             d.turns += s.turns; d.duration += s.duration
             d.ctx = weightedAverage(d.ctx, originalSessions, s.ctx, s.sessions)
-            dst.set(k, d)
+            dst.set(pair.dst, d)
         }
     }
 
-    private static func mergeRanges(_ dst: inout QoderIdeRanges, _ src: QoderIdeRanges) {
-        for k in RangeKey.allCases {
-            var d = dst.get(k), s = src.get(k)
+    private static func mergeRanges(_ dst: inout QoderIdeRanges, _ src: QoderIdeRanges, _ pairs: [(src: RangeKey, dst: RangeKey)]) {
+        for pair in pairs {
+            var d = dst.get(pair.dst), s = src.get(pair.src)
             let originalSessions = d.sessions
             d.in += s.in; d.out += s.out; d.cached += s.cached
             d.sessions += s.sessions
             d.sub_agents += s.sub_agents; d.calls += s.calls
             d.messages += s.messages; d.duration += s.duration
             d.ctx = weightedAverage(d.ctx, originalSessions, s.ctx, s.sessions)
-            dst.set(k, d)
+            dst.set(pair.dst, d)
         }
     }
 
-    private static func mergeRanges(_ dst: inout HermesRanges, _ src: HermesRanges) {
-        for k in RangeKey.allCases {
-            var d = dst.get(k), s = src.get(k)
+    private static func mergeRanges(_ dst: inout HermesRanges, _ src: HermesRanges, _ pairs: [(src: RangeKey, dst: RangeKey)]) {
+        for pair in pairs {
+            var d = dst.get(pair.dst), s = src.get(pair.src)
             d.in += s.in; d.out += s.out; d.cr += s.cr; d.cw += s.cw
             d.reason += s.reason; d.cost += s.cost; d.sessions += s.sessions
             d.hit = hitRate(cached: d.cr, input: d.in, cacheWrite: d.cw)
             mergeTokenModels(&d.models, s.models)
-            dst.set(k, d)
+            dst.set(pair.dst, d)
         }
     }
 
-    private static func mergeRanges(_ dst: inout OpenClawRanges, _ src: OpenClawRanges) {
-        for k in RangeKey.allCases {
-            var d = dst.get(k), s = src.get(k)
+    private static func mergeRanges(_ dst: inout OpenClawRanges, _ src: OpenClawRanges, _ pairs: [(src: RangeKey, dst: RangeKey)]) {
+        for pair in pairs {
+            var d = dst.get(pair.dst), s = src.get(pair.src)
             d.tasks += s.tasks; d.completed += s.completed; d.failed += s.failed
             d.in += s.in; d.out += s.out; d.cr += s.cr; d.cw += s.cw
             d.cost += s.cost; d.sessions += s.sessions
             d.hit = hitRate(cached: d.cr, input: d.in, cacheWrite: d.cw)
             mergeTokenModels(&d.models, s.models)
-            dst.set(k, d)
+            dst.set(pair.dst, d)
         }
     }
 
-    private static func mergeRanges(_ dst: inout TokenUsageRanges, _ src: TokenUsageRanges) {
-        for k in RangeKey.allCases {
-            var d = dst.get(k), s = src.get(k)
+    private static func mergeRanges(_ dst: inout TokenUsageRanges, _ src: TokenUsageRanges, _ pairs: [(src: RangeKey, dst: RangeKey)]) {
+        for pair in pairs {
+            var d = dst.get(pair.dst), s = src.get(pair.src)
             d.in += s.in; d.out += s.out; d.cr += s.cr; d.cw += s.cw
             d.reason += s.reason; d.cost += s.cost; d.sessions += s.sessions
             d.hit = hitRate(cached: d.cr, input: d.in, cacheWrite: d.cw)
             mergeTokenModels(&d.models, s.models)
-            dst.set(k, d)
+            dst.set(pair.dst, d)
         }
     }
 
