@@ -381,13 +381,21 @@ final class SyncManager {
         guard let cfg = config else { completion(false); return }
         let dir = Self.resolvedSyncDir(cfg)
         let escapedDir = dir.replacingOccurrences(of: "'", with: "'\\''")
+        let escapedDevice = cfg.device_id.replacingOccurrences(of: "'", with: "'\\''")
         DispatchQueue.global(qos: .utility).async {
             let script = """
-            cd '\(escapedDir)' && \
-            git pull --rebase --autostash 2>/dev/null; \
-            git add -A && \
-            (git diff --cached --quiet || git commit -m "tokei sync \(cfg.device_id)") && \
-            git push 2>/dev/null
+            cd '\(escapedDir)' || exit 1
+            git fetch origin main 2>/dev/null || exit 1
+            device_file=$(find . -maxdepth 1 -type f -iname '\(escapedDevice).json' -print -quit)
+            if [ -z "$device_file" ]; then
+              device_file='./\(escapedDevice).json'
+            fi
+            git add -- "$device_file" || exit 1
+            if ! git diff --cached --quiet; then
+              git commit -m 'tokei sync \(escapedDevice)' || exit 1
+            fi
+            git rebase origin/main 2>/dev/null || exit 1
+            git push origin HEAD:main 2>/dev/null
             """
             let proc = Process()
             proc.executableURL = URL(fileURLWithPath: "/bin/zsh")

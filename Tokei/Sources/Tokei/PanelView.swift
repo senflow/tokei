@@ -1116,6 +1116,9 @@ struct PanelView: View {
                 }
                 if let auto = cfg.auto_sync { autoSync = auto }
                 if let interval = cfg.sync_interval { syncInterval = interval }
+                if store.syncEnabled && autoSync {
+                    store.startAutoSync(minutes: syncInterval)
+                }
             }
             if !syncDir.isEmpty {
                 DispatchQueue.global(qos: .userInitiated).async {
@@ -1293,6 +1296,9 @@ struct PanelView: View {
                     if on {
                         setupSync()
                         store.refresh()
+                        if autoSync {
+                            store.startAutoSync(minutes: syncInterval)
+                        }
                     } else {
                         store.stopAutoSync()
                         store.applyDisplayMode()
@@ -1331,6 +1337,7 @@ struct PanelView: View {
                     Toggle("", isOn: $autoSync)
                         .toggleStyle(.switch).controlSize(.mini).labelsHidden()
                         .onChange(of: autoSync) { on in
+                            saveSync()
                             if on { store.startAutoSync(minutes: syncInterval) }
                             else { store.stopAutoSync() }
                         }
@@ -1341,7 +1348,10 @@ struct PanelView: View {
                         .pickerStyle(.segmented)
                         .frame(width: 90)
                         .controlSize(.mini)
-                        .onChange(of: syncInterval) { v in store.startAutoSync(minutes: v) }
+                        .onChange(of: syncInterval) { v in
+                            saveSync()
+                            if autoSync { store.startAutoSync(minutes: v) }
+                        }
                     }
                 }
 
@@ -1374,7 +1384,7 @@ struct PanelView: View {
                                 .fixedSize(horizontal: false, vertical: true)
                             Rectangle().fill(Color.primary.opacity(0.04)).frame(height: 1)
                             Text("远程 Linux").font(.system(size: 9, weight: .medium)).foregroundStyle(Theme.tSecondary)
-                            copyBlock("git clone \(dataRepo) ~/.tokei/sync && curl -fsSL https://dl.lanshuagent.com/tokei/usage.30s.py -o ~/.tokei/usage.30s.py && echo '{\"sync_dir\":\"~/.tokei/sync\",\"device_id\":\"'$(hostname -s)'\"}' > ~/.tokei/config.json && (crontab -l 2>/dev/null; echo '*/5 * * * * cd ~/.tokei/sync && python3 ~/.tokei/usage.30s.py --json >/dev/null && git pull -q && git add -A && git diff --cached --quiet || git commit -qm sync && git push -q') | crontab -")
+                            copyBlock(linuxSetupCommand(remote: dataRepo))
                         } else {
                             Text("数据目录未关联 Git 仓库")
                                 .font(.system(size: 9)).foregroundStyle(Theme.tTertiary)
@@ -1703,6 +1713,34 @@ struct PanelView: View {
         proc.waitUntilExit()
         let url = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return url.isEmpty ? "<未配置 git remote>" : url
+    }
+
+    func linuxSetupCommand(remote: String) -> String {
+        """
+        mkdir -p ~/.tokei
+        if [ ! -d ~/.tokei/sync/.git ]; then
+          git clone \(remote) ~/.tokei/sync
+        fi
+        curl -fsSL https://dl.lanshuagent.com/tokei/usage.30s.py -o ~/.tokei/usage.30s.py
+        cat > ~/.tokei/config.json <<'JSON'
+        {"sync_dir":"~/.tokei/sync","device_id":"$(hostname -s)","auto_sync":true,"sync_interval":5}
+        JSON
+        cat > ~/.tokei/tokei-sync.sh <<'SH'
+        #!/bin/sh
+        set -e
+        cd "$HOME/.tokei/sync"
+        python3 "$HOME/.tokei/usage.30s.py" --json >/dev/null
+        git fetch -q origin main
+        device_file=$(find . -maxdepth 1 -type f -iname "$(hostname -s).json" -print -quit)
+        [ -n "$device_file" ] || device_file="./$(hostname -s).json"
+        git add -- "$device_file"
+        git diff --cached --quiet || git commit -qm "sync $(hostname -s)"
+        git rebase -q origin/main
+        git push -q origin HEAD:main
+        SH
+        chmod +x ~/.tokei/tokei-sync.sh
+        (crontab -l 2>/dev/null | grep -v 'tokei-sync.sh'; echo '*/5 * * * * ~/.tokei/tokei-sync.sh') | crontab -
+        """
     }
 
     func copyBlock(_ text: String) -> some View {

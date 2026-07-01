@@ -1885,23 +1885,19 @@ def main_json():
                 "wrapped": {p: build_wrapped(p, refresh=False)
                             for p in ["all", "1d", "7d", "30d", "365d"]},
             }
+            own_name = f"{device_id}.json"
             try:
-                with open(os.path.join(sync_dir, f"{device_id}.json"), "w") as f:
+                for fn in os.listdir(sync_dir):
+                    if fn.lower() == own_name.lower():
+                        own_name = fn
+                        break
+            except OSError:
+                pass
+            try:
+                with open(os.path.join(sync_dir, own_name), "w") as f:
                     json.dump(d, f, ensure_ascii=False)
             except OSError:
                 pass
-            # 用本地价格表修正其他设备的同步文件
-            for fn in os.listdir(sync_dir):
-                if fn.endswith(".json") and fn != f"{device_id}.json":
-                    peer_path = os.path.join(sync_dir, fn)
-                    try:
-                        with open(peer_path) as f:
-                            peer = json.load(f)
-                        _recalc_costs(peer)
-                        with open(peer_path, "w") as f:
-                            json.dump(peer, f, ensure_ascii=False)
-                    except Exception:
-                        pass
 
 
 def main():
