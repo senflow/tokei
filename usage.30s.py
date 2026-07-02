@@ -5,7 +5,8 @@
 # <bitbar.desc>本地 AI coding tools token / 缓存命中 / 花费 / 额度</bitbar.desc>
 # <swiftbar.runInBash>false</swiftbar.runInBash>
 #
-# 数据全部读自本地会话日志,运行/刷新不联网、不改动任何 CLI(仅 --update-prices 显式联网更新价格表):
+# 数据主要读自本地会话日志,不改动任何 CLI；Codex 额度会短缓存查询官方 live usage。
+# 仅 --update-prices 显式联网更新价格表:
 #   Claude Code: ~/.claude/projects/<proj>/<session>.jsonl  (assistant 行 message.usage,增量)
 #   Codex:       ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl (token_count 事件,含额度)
 #   Pi:          ~/.pi/agent/sessions/**/*.jsonl (assistant 行 message.usage)
@@ -20,6 +21,7 @@ from datetime import datetime, timedelta, date
 HOME = os.path.expanduser("~")
 CLAUDE_DIR = os.path.join(HOME, ".claude", "projects")
 CODEX_DIR = os.path.join(HOME, ".codex", "sessions")
+CODEX_AUTH = os.path.join(HOME, ".codex", "auth.json")
 GEMINI_DIR = os.path.join(HOME, ".gemini", "tmp")
 GROK_DIR = os.path.join(HOME, ".grok", "sessions")
 QODER_IDE_DB = os.path.join(HOME, "Library", "Application Support", "Qoder",
@@ -50,6 +52,7 @@ def _writable_path(name):
 
 PRICING_FILE = _writable_path("pricing.json")
 OVERRIDES_FILE = _writable_path("pricing_overrides.json")
+CODEX_QUOTA_CACHE = _writable_path("codex_quota_cache.json")
 
 # 每 1M token 美元单价。基准价来自 OpenRouter,外置在 pricing.json(由 --update-prices 同步);
 # pricing_overrides.json 做本地修正(write1h / 别名 / 缺漏),一键更新不覆盖它。
@@ -565,6 +568,112 @@ def _claude_usage(line, want_dt=False):
 
 
 # ---------- Codex ----------
+_CODEX_QUOTA_TTL = 30
+_CODEX_QUOTA_FALLBACK_TTL = 300
+
+
+def _atomic_write_json(path, data):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    import tempfile
+    fd, tmp = tempfile.mkstemp(prefix=".tmp-", suffix=".json", dir=os.path.dirname(path))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, separators=(",", ":"))
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _window_from_codex_live(window):
+    if not isinstance(window, dict):
+        return None
+    used = window.get("used_percent")
+    reset_at = window.get("reset_at")
+    reset_after = window.get("reset_after_seconds")
+    if reset_at is None and reset_after is not None:
+        reset_at = int(datetime.now().timestamp() + float(reset_after))
+    out = {}
+    if used is not None:
+        out["used_percent"] = float(used)
+    if window.get("limit_window_seconds") is not None:
+        out["window_minutes"] = int(round(float(window["limit_window_seconds"]) / 60))
+    if reset_at is not None:
+        out["resets_at"] = int(reset_at)
+    return out or None
+
+
+def _codex_live_to_limits(data):
+    rl = (data or {}).get("rate_limit") or {}
+    primary = _window_from_codex_live(rl.get("primary_window"))
+    secondary = _window_from_codex_live(rl.get("secondary_window"))
+    if not primary and not secondary:
+        return None
+    return {
+        "limit_id": "codex",
+        "limit_name": None,
+        "primary": primary,
+        "secondary": secondary,
+        "credits": data.get("credits"),
+        "plan_type": data.get("plan_type"),
+        "rate_limit_reached_type": rl.get("rate_limit_reached_type"),
+    }
+
+
+def _cached_codex_live_limits(max_age):
+    cached = _load_json(CODEX_QUOTA_CACHE, {})
+    fetched_at = cached.get("fetched_at")
+    limits = cached.get("limits")
+    if not fetched_at or not limits:
+        return None
+    if datetime.now().timestamp() - float(fetched_at) > max_age:
+        return None
+    return limits, cached.get("plan")
+
+
+def fetch_codex_live_limits():
+    if os.environ.get("TOKEI_CODEX_LIVE_QUOTA") == "0":
+        return None
+    cached = _cached_codex_live_limits(_CODEX_QUOTA_TTL)
+    if cached:
+        return cached
+    auth = _load_json(CODEX_AUTH, {})
+    tokens = auth.get("tokens") or {}
+    access_token = tokens.get("access_token")
+    if not access_token:
+        return _cached_codex_live_limits(_CODEX_QUOTA_FALLBACK_TTL)
+    try:
+        import urllib.request
+        req = urllib.request.Request(
+            "https://chatgpt.com/backend-api/wham/usage",
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Accept": "application/json",
+                "User-Agent": "Tokei",
+            },
+        )
+        account_id = tokens.get("account_id")
+        if account_id:
+            req.add_header("ChatGPT-Account-Id", account_id)
+        with urllib.request.urlopen(req, timeout=3) as res:
+            data = json.load(res)
+        limits = _codex_live_to_limits(data)
+        if not limits:
+            return _cached_codex_live_limits(_CODEX_QUOTA_FALLBACK_TTL)
+        plan = data.get("plan_type")
+        _atomic_write_json(CODEX_QUOTA_CACHE, {
+            "fetched_at": datetime.now().timestamp(),
+            "limits": limits,
+            "plan": plan,
+        })
+        return limits, plan
+    except Exception:
+        return _cached_codex_live_limits(_CODEX_QUOTA_FALLBACK_TTL)
+
+
 def scan_codex(bounds, cache):
     fc = cache.setdefault("codex", {})
     B = {k: {"in": 0, "cached": 0, "out": 0, "reason": 0, "cost": 0.0, "sessions": set()}
@@ -688,6 +797,11 @@ def scan_codex(bounds, cache):
     if latest_limits is None and g_limits is not None:
         latest_limits = g_limits
         plan_type = (g_limits or {}).get("plan_type")
+
+    live = fetch_codex_live_limits()
+    if live:
+        latest_limits, live_plan = live
+        plan_type = live_plan or (latest_limits or {}).get("plan_type") or plan_type
 
     cur_total = None
     if cur_file:
