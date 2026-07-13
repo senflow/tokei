@@ -262,7 +262,7 @@ def human(n: float) -> str:
 # ---------- 增量扫描缓存 ----------
 import tempfile as _tempfile
 _SCAN_CACHE_FILE = os.path.join(_tempfile.gettempdir(), "_tokei_scan_cache.json")
-_SCAN_CACHE_VERSION = 9
+_SCAN_CACHE_VERSION = 10
 
 
 def _load_scan_cache():
@@ -601,6 +601,7 @@ def scan_codex(bounds, cache):
             file_limits = None; file_limits_ts = None; file_plan = None
             file_g_limits = None; file_g_ts = None; file_g_plan = None
             file_last_total = None
+            prev_total_key = None
             try:
                 with open(f, "r", encoding="utf-8", errors="ignore") as fh:
                     for line in fh:
@@ -613,7 +614,14 @@ def scan_codex(bounds, cache):
                         info = (o.get("payload") or {}).get("info") or {}
                         last = info.get("last_token_usage") or {}
                         total = info.get("total_token_usage") or {}
+                        duplicate_total = False
                         if total:
+                            total_key = (total.get("input_tokens", 0) or 0,
+                                         total.get("cached_input_tokens", 0) or 0,
+                                         total.get("output_tokens", 0) or 0,
+                                         total.get("reasoning_output_tokens", 0) or 0)
+                            duplicate_total = total_key == prev_total_key
+                            prev_total_key = total_key
                             file_last_total = total
                         ts = parse_ts(o.get("timestamp", ""))
                         rl = (o.get("payload") or {}).get("rate_limits")
@@ -627,7 +635,9 @@ def scan_codex(bounds, cache):
                                 file_limits_ts = ts_iso
                                 file_limits = rl
                                 file_plan = rl.get("plan_type")
-                        if ts and last:
+                        # Codex may emit the same cumulative snapshot twice; in that case
+                        # last_token_usage is repeated too, so counting it again overstates usage.
+                        if ts and last and not duplicate_total:
                             dk = ts.astimezone().date().isoformat()
                             li = last.get("input_tokens", 0) or 0
                             lc = last.get("cached_input_tokens", 0) or 0
