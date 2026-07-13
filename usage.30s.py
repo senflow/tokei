@@ -265,7 +265,7 @@ def human(n: float) -> str:
 # ---------- 增量扫描缓存 ----------
 import tempfile as _tempfile
 _SCAN_CACHE_FILE = os.path.join(_tempfile.gettempdir(), "_tokei_scan_cache.json")
-_SCAN_CACHE_VERSION = 10
+_SCAN_CACHE_VERSION = 11
 
 
 def _load_scan_cache():
@@ -674,6 +674,39 @@ def fetch_codex_live_limits():
         return _cached_codex_live_limits(_CODEX_QUOTA_FALLBACK_TTL)
 
 
+def _codex_deduped_days(file_cache):
+    """Return per-file daily usage after removing replayed snapshots globally."""
+    owners = {}
+    for file_path, entry in file_cache.items():
+        for event_index, event in enumerate(entry.get("events", [])):
+            if not isinstance(event, list) or len(event) != 11:
+                continue
+            total_values = event[2:6]
+            if all(value is not None for value in total_values):
+                key = tuple(event[2:10])
+            else:
+                # A last_token_usage without a cumulative total cannot be matched safely.
+                key = ("unique", file_path, event_index)
+            rank = (event[0], file_path, event_index)
+            current = owners.get(key)
+            if current is None or rank < current[0]:
+                owners[key] = (rank, file_path, event)
+
+    days_by_file = {}
+    for _, file_path, event in owners.values():
+        dk = event[1]
+        li, lc, lo, lr, cost = event[6:11]
+        days = days_by_file.setdefault(file_path, {})
+        day = days.setdefault(dk, {"in": 0, "cached": 0, "out": 0,
+                                   "reason": 0, "cost": 0.0})
+        day["in"] += li
+        day["cached"] += lc
+        day["out"] += lo
+        day["reason"] += lr
+        day["cost"] += cost
+    return days_by_file
+
+
 def scan_codex(bounds, cache):
     fc = cache.setdefault("codex", {})
     B = {k: {"in": 0, "cached": 0, "out": 0, "reason": 0, "cost": 0.0, "sessions": set()}
@@ -706,7 +739,7 @@ def scan_codex(bounds, cache):
         sig = f"{mtime}:{size}"
         entry = fc.get(f)
         if not entry or entry.get("sig") != sig:
-            days = {}
+            events = []
             file_limits = None; file_limits_ts = None; file_plan = None
             file_g_limits = None; file_g_ts = None; file_g_plan = None
             file_last_total = None
@@ -723,6 +756,7 @@ def scan_codex(bounds, cache):
                         info = (o.get("payload") or {}).get("info") or {}
                         last = info.get("last_token_usage") or {}
                         total = info.get("total_token_usage") or {}
+                        total_key = None
                         duplicate_total = False
                         if total:
                             total_key = (total.get("input_tokens", 0) or 0,
@@ -757,19 +791,29 @@ def scan_codex(bounds, cache):
                             p_out = cx_base["out"] * (1.5 if hi else 1)
                             p_cr = cx_base["cache_read"] * (2 if hi else 1)
                             cost = (li - lc) / 1e6 * p_in + lc / 1e6 * p_cr + lo / 1e6 * p_out
-                            day = days.setdefault(dk, {"in": 0, "cached": 0, "out": 0,
-                                                       "reason": 0, "cost": 0.0})
-                            day["in"] += li; day["cached"] += lc
-                            day["out"] += lo; day["reason"] += lr; day["cost"] += cost
+                            totals = total_key if total_key is not None else (None, None, None, None)
+                            # timestamp, local day, cumulative usage, incremental usage, cost
+                            events.append([ts.isoformat(), dk, *totals, li, lc, lo, lr, cost])
             except OSError:
                 continue
-            fc[f] = {"sig": sig, "days": days,
+            fc[f] = {"sig": sig, "events": events, "days": {},
                      "limits": file_limits, "limits_ts": file_limits_ts, "plan": file_plan,
                      "g_limits": file_g_limits, "g_ts": file_g_ts, "g_plan": file_g_plan,
                      "last_total": file_last_total}
+            cache["_dirty"] = True
 
     for p in stale:
         fc.pop(p, None)
+        cache["_dirty"] = True
+
+    # Forked and subagent rollouts replay parent history. Select the earliest
+    # occurrence of each cumulative+increment snapshot across all files.
+    days_by_file = _codex_deduped_days(fc)
+    for f, entry in fc.items():
+        days = days_by_file.get(f, {})
+        if entry.get("days") != days:
+            entry["days"] = days
+            cache["_dirty"] = True
 
     # Assembly: per-day → range buckets
     for f, entry in fc.items():

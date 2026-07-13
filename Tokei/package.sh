@@ -32,8 +32,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundleName</key><string>Tokei</string>
     <key>CFBundleDisplayName</key><string>Tokei</string>
     <key>CFBundleIdentifier</key><string>com.tokei.app</string>
-    <key>CFBundleVersion</key><string>1.0</string>
-    <key>CFBundleShortVersionString</key><string>1.0</string>
+    <key>CFBundleVersion</key><string>1.0.11</string>
+    <key>CFBundleShortVersionString</key><string>1.0.11</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleExecutable</key><string>Tokei</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>

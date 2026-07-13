@@ -149,6 +149,9 @@ echo '{"sync_dir":"~/.tokei/sync","device_id":"'$(hostname -s)'"}' > ~/.tokei/co
 
 ## 更新日志
 
+### v1.0.11
+- fix: Codex 跨 rollout 去重，避免子代理和分叉任务重复累计父任务 Token
+
 ### v1.0.10
 - fix: Codex 实时配额抓取（plan / 周配额 / 重置时间）
 - fix: Codex 按时长检测配额窗口，跳过重复 token 快照
