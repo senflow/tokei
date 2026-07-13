@@ -1044,14 +1044,11 @@ struct PanelView: View {
     }
 
     @State private var refreshHover = false
-    @State private var refreshSpin = false
 
     private var refreshButton: some View {
         Button { store.refresh() } label: {
             HStack(spacing: 4) {
-                Image(systemName: "arrow.clockwise")
-                    .font(.system(size: 10, weight: .semibold))
-                    .rotationEffect(.degrees(refreshSpin ? 360 : 0))
+                refreshIcon
                 Text("刷新").font(.system(size: 11, weight: .medium))
             }
             .foregroundStyle(refreshHover ? AnyShapeStyle(Theme.tPrimary) : AnyShapeStyle(Theme.tTertiary))
@@ -1065,16 +1062,22 @@ struct PanelView: View {
         }
         .buttonStyle(.plain)
         .onHover { refreshHover = $0 }
-        .onChange(of: store.refreshing) { active in
-            if active {
-                withAnimation(.linear(duration: 0.6).repeatForever(autoreverses: false)) {
-                    refreshSpin = true
-                }
-            } else {
-                var t = Transaction()
-                t.disablesAnimations = true
-                withTransaction(t) { refreshSpin = false }
+    }
+
+    // 用 TimelineView 按真实时间驱动旋转,只在 store.refreshing 为 true 时渲染,
+    // 天然没有"动画卡住转不停"的问题(repeatForever 在状态频繁切换时容易停不下来)。
+    @ViewBuilder
+    private var refreshIcon: some View {
+        if store.refreshing {
+            TimelineView(.animation) { context in
+                let seconds = context.date.timeIntervalSinceReferenceDate
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: 10, weight: .semibold))
+                    .rotationEffect(.degrees(seconds.truncatingRemainder(dividingBy: 1) * 360))
             }
+        } else {
+            Image(systemName: "arrow.clockwise")
+                .font(.system(size: 10, weight: .semibold))
         }
     }
 
