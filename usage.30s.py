@@ -265,7 +265,7 @@ def human(n: float) -> str:
 # ---------- 增量扫描缓存 ----------
 import tempfile as _tempfile
 _SCAN_CACHE_FILE = os.path.join(_tempfile.gettempdir(), "_tokei_scan_cache.json")
-_SCAN_CACHE_VERSION = 9
+_SCAN_CACHE_VERSION = 10
 
 
 def _load_scan_cache():
@@ -710,6 +710,7 @@ def scan_codex(bounds, cache):
             file_limits = None; file_limits_ts = None; file_plan = None
             file_g_limits = None; file_g_ts = None; file_g_plan = None
             file_last_total = None
+            prev_total_key = None
             try:
                 with open(f, "r", encoding="utf-8", errors="ignore") as fh:
                     for line in fh:
@@ -722,7 +723,14 @@ def scan_codex(bounds, cache):
                         info = (o.get("payload") or {}).get("info") or {}
                         last = info.get("last_token_usage") or {}
                         total = info.get("total_token_usage") or {}
+                        duplicate_total = False
                         if total:
+                            total_key = (total.get("input_tokens", 0) or 0,
+                                         total.get("cached_input_tokens", 0) or 0,
+                                         total.get("output_tokens", 0) or 0,
+                                         total.get("reasoning_output_tokens", 0) or 0)
+                            duplicate_total = total_key == prev_total_key
+                            prev_total_key = total_key
                             file_last_total = total
                         ts = parse_ts(o.get("timestamp", ""))
                         rl = (o.get("payload") or {}).get("rate_limits")
@@ -736,7 +744,9 @@ def scan_codex(bounds, cache):
                                 file_limits_ts = ts_iso
                                 file_limits = rl
                                 file_plan = rl.get("plan_type")
-                        if ts and last:
+                        # Codex may emit the same cumulative snapshot twice; in that case
+                        # last_token_usage is repeated too, so counting it again overstates usage.
+                        if ts and last and not duplicate_total:
                             dk = ts.astimezone().date().isoformat()
                             li = last.get("input_tokens", 0) or 0
                             lc = last.get("cached_input_tokens", 0) or 0
@@ -815,6 +825,30 @@ def scan_codex(bounds, cache):
         "limits": latest_limits,
         "plan": plan_type,
     }
+
+
+def _codex_quota_values(limits, now_epoch=None):
+    """Map Codex rate-limit slots by duration; primary/secondary roles can change."""
+    values = {"p5": None, "pw": None, "r5": None, "rw": None}
+    for slot_name in ("primary", "secondary"):
+        slot = (limits or {}).get(slot_name) or {}
+        if not slot:
+            continue
+        minutes = slot.get("window_minutes")
+        # Older logs use primary=5h and secondary=7d. Newer plans may expose
+        # the 7d window as primary with no secondary, so duration is canonical.
+        is_week = minutes == 7 * 24 * 60 or (minutes is None and slot_name == "secondary")
+        pct_key, reset_key = ("pw", "rw") if is_week else ("p5", "r5")
+        values[pct_key] = slot.get("used_percent")
+        values[reset_key] = slot.get("resets_at")
+
+    now_epoch = now_epoch if now_epoch is not None else int(datetime.now().timestamp())
+    for pct_key, reset_key in (("p5", "r5"), ("pw", "rw")):
+        reset = values[reset_key]
+        if reset and now_epoch > reset:
+            values[pct_key] = 0.0
+            values[reset_key] = None
+    return values
 
 
 # ---------- Gemini CLI ----------
@@ -1870,18 +1904,9 @@ def compute():
     cur = cc["cur"]
     cur_total = cur["in"] + cur["out"] + cur["cr"] + cur["cw"]
 
-    lim = cx["limits"] or {}
-    now_epoch = int(datetime.now().timestamp())
-    p5 = (lim.get("primary") or {}).get("used_percent")
-    pw = (lim.get("secondary") or {}).get("used_percent")
-    r5 = (lim.get("primary") or {}).get("resets_at")
-    rw = (lim.get("secondary") or {}).get("resets_at")
-    if r5 and now_epoch > r5:
-        p5 = 0.0
-        r5 = None
-    if rw and now_epoch > rw:
-        pw = 0.0
-        rw = None
+    quota = _codex_quota_values(cx["limits"])
+    p5, pw = quota["p5"], quota["pw"]
+    r5, rw = quota["r5"], quota["rw"]
 
     plan = _safe_scan("claude_plan", scan_claude_plan, lambda: {}, errors) or {}
 

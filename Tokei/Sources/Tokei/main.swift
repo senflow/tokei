@@ -137,7 +137,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let s = NSMutableAttributedString()
         let font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .semibold)
 
-        // 一格 = 时钟图标 + 5h 剩余%,按家族品牌色着色(橙=Claude 青=Codex)。
+        // 一格 = 时钟图标 + 当前额度剩余%,按家族品牌色着色(橙=Claude 青=Codex)。
         func seg(_ value: String, _ color: NSColor) {
             if s.length > 0 {
                 s.append(NSAttributedString(string: "  ", attributes: [.font: font]))
@@ -168,7 +168,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if ud.object(forKey: "showClaude") as? Bool ?? true,
                let q5 = u.claude.q5 { seg(String(format: "%.0f", 100 - q5), Self.claudeColor) }
             if ud.object(forKey: "showCodex") as? Bool ?? true,
-               let p5 = u.codex.p5 { seg(String(format: "%.0f", 100 - p5), Self.codexColor) }
+               let quota = u.codex.p5 ?? u.codex.pw {
+                seg(String(format: "%.0f", 100 - quota), Self.codexColor)
+            }
             if s.length == 0 {
                 let showC = ud.object(forKey: "showClaude") as? Bool ?? true
                 let showX = ud.object(forKey: "showCodex") as? Bool ?? true
