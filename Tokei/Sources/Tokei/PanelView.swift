@@ -1063,6 +1063,7 @@ struct PanelView: View {
     }
 
     @ObservedObject private var updater = Updater.shared
+    @ObservedObject private var loginItem = LoginItemManager.shared
     @State private var priceUpdating = false
     @State private var priceResult = ""
     @State private var debugRunning = false
@@ -1089,6 +1090,7 @@ struct PanelView: View {
                 .frame(maxWidth: .infinity, alignment: .top)
 
                 VStack(alignment: .leading, spacing: 11) {
+                    settingsSystemSection
                     settingsReminderSection
                     settingsSyncSection
                     if !store.syncEnabled { settingsRemoteHintSection }
@@ -1098,6 +1100,7 @@ struct PanelView: View {
 
         }
         .onAppear {
+            loginItem.refresh()
             if let cfg = SyncManager.loadConfig() {
                 if syncDir.isEmpty && !cfg.sync_dir.isEmpty {
                     let expanded = (cfg.sync_dir as NSString).expandingTildeInPath
@@ -1125,6 +1128,35 @@ struct PanelView: View {
                     let url = Self.gitRemoteUrl(syncDir)
                     DispatchQueue.main.async { cachedRemoteUrl = url }
                 }
+            }
+        }
+    }
+
+    var settingsSystemSection: some View {
+        settingsSection("gearshape.2", "系统") {
+            settingsToggleRow(
+                "登录时启动",
+                isOn: Binding(
+                    get: { loginItem.enabled },
+                    set: { loginItem.setEnabled($0) }
+                )
+            )
+
+            if loginItem.requiresApproval {
+                HStack(spacing: 7) {
+                    Text("需要在系统设置中允许")
+                        .font(.system(size: 8.5))
+                        .foregroundStyle(Theme.tTertiary)
+                    Spacer()
+                    settingsActionButton(icon: "gear", title: "打开设置") {
+                        loginItem.openSystemSettings()
+                    }
+                }
+            } else if let error = loginItem.errorMessage {
+                Text(error)
+                    .font(.system(size: 8.5))
+                    .foregroundStyle(.red.opacity(0.85))
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -1162,6 +1194,14 @@ struct PanelView: View {
         if let data = try? JSONSerialization.data(withJSONObject: dict, options: [.prettyPrinted, .sortedKeys]) {
             try? data.write(to: configURL)
         }
+    }
+
+    /// 启动时把 UI 开关(showQoderIde)的当前值落盘到 config.json。
+    /// 修复:showQoder 默认开启,但 .onChange 不会在启动时触发,
+    /// 导致 qoder_ide_enabled 从未写入、Python 端一直不采集 Qoder IDE 数据。
+    static func syncQoderIdeConfigOnLaunch() {
+        let enabled = UserDefaults.standard.object(forKey: "showQoderIde") as? Bool ?? true
+        setQoderIdeEnabled(enabled)
     }
 
     var settingsPricingSection: some View {

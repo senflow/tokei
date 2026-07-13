@@ -149,6 +149,12 @@ echo '{"sync_dir":"~/.tokei/sync","device_id":"'$(hostname -s)'"}' > ~/.tokei/co
 
 ## 更新日志
 
+### v1.0.12
+- feat: 开机自启动（设置页「登录时启动」开关）
+- fix: Codex token 快照去重，避免重复累计
+- fix: 同步配置只更新同步字段，保留 qoder_ide_enabled 等其他配置
+- fix: 启动时落盘 Qoder IDE 开关状态
+
 ### v1.0.11
 - fix: Codex 跨 rollout 去重，避免子代理和分叉任务重复累计父任务 Token
 

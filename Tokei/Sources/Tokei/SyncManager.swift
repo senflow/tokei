@@ -53,7 +53,18 @@ final class SyncManager {
         config = cfg
         let dir = Self.configPath.deletingLastPathComponent()
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        if let data = try? JSONEncoder().encode(cfg) {
+        // 读取现有 JSON 并只更新同步相关字段,保留其他 key
+        // (如 qoder_ide_enabled),避免整体覆盖导致非同步字段丢失。
+        var dict: [String: Any] = [:]
+        if let data = try? Data(contentsOf: Self.configPath),
+           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            dict = obj
+        }
+        dict["device_id"] = cfg.device_id
+        dict["sync_dir"] = cfg.sync_dir
+        if let v = cfg.auto_sync { dict["auto_sync"] = v } else { dict.removeValue(forKey: "auto_sync") }
+        if let v = cfg.sync_interval { dict["sync_interval"] = v } else { dict.removeValue(forKey: "sync_interval") }
+        if let data = try? JSONSerialization.data(withJSONObject: dict, options: [.prettyPrinted, .sortedKeys]) {
             try? data.write(to: Self.configPath)
         }
     }

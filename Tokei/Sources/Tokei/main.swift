@@ -107,6 +107,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         popover.behavior = .applicationDefined
         popover.animates = true
 
+        // 启动时先把 Qoder IDE 开关状态落盘到 config.json,
+        // 确保随后的 refresh() 触发的 Python 扫描能读到正确的 qoder_ide_enabled。
+        PanelView.syncQoderIdeConfigOnLaunch()
         store.refresh()
         store.sitReminder.updateRunning()
         Updater.shared.checkForUpdate()

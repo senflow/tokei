@@ -707,6 +707,54 @@ def _codex_deduped_days(file_cache):
     return days_by_file
 
 
+_CODEX_TOKEN_EVENT_HEADER = re.compile(
+    rb'^\s*\{\s*"timestamp"\s*:\s*"[^"]+"\s*,\s*'
+    rb'"type"\s*:\s*"event_msg"\s*,\s*'
+    rb'"payload"\s*:\s*\{\s*"type"\s*:\s*"token_count"'
+)
+
+
+def _iter_codex_token_lines(path, chunk_size=64 * 1024, header_limit=4 * 1024):
+    """Yield token_count JSONL records without buffering unrelated large records."""
+    prefix = bytearray()
+    candidate = None
+
+    with open(path, "rb", buffering=0) as fh:
+        while True:
+            chunk = fh.read(chunk_size)
+            if not chunk:
+                break
+
+            start = 0
+            while start < len(chunk):
+                newline = chunk.find(b"\n", start)
+                end = len(chunk) if newline < 0 else newline
+                piece = memoryview(chunk)[start:end]
+
+                if candidate is not None:
+                    candidate.extend(piece)
+                elif len(prefix) < header_limit:
+                    take = min(len(piece), header_limit - len(prefix))
+                    prefix.extend(piece[:take])
+                    if _CODEX_TOKEN_EVENT_HEADER.search(prefix):
+                        candidate = prefix
+                        prefix = bytearray()
+                        if take < len(piece):
+                            candidate.extend(piece[take:])
+
+                if newline < 0:
+                    break
+
+                if candidate is not None:
+                    yield bytes(candidate)
+                prefix = bytearray()
+                candidate = None
+                start = newline + 1
+
+    if candidate is not None:
+        yield bytes(candidate)
+
+
 def scan_codex(bounds, cache):
     fc = cache.setdefault("codex", {})
     B = {k: {"in": 0, "cached": 0, "out": 0, "reason": 0, "cost": 0.0, "sessions": set()}
@@ -745,55 +793,52 @@ def scan_codex(bounds, cache):
             file_last_total = None
             prev_total_key = None
             try:
-                with open(f, "r", encoding="utf-8", errors="ignore") as fh:
-                    for line in fh:
-                        if '"token_count"' not in line:
-                            continue
-                        try:
-                            o = json.loads(line)
-                        except Exception:
-                            continue
-                        info = (o.get("payload") or {}).get("info") or {}
-                        last = info.get("last_token_usage") or {}
-                        total = info.get("total_token_usage") or {}
-                        total_key = None
-                        duplicate_total = False
-                        if total:
-                            total_key = (total.get("input_tokens", 0) or 0,
-                                         total.get("cached_input_tokens", 0) or 0,
-                                         total.get("output_tokens", 0) or 0,
-                                         total.get("reasoning_output_tokens", 0) or 0)
-                            duplicate_total = total_key == prev_total_key
-                            prev_total_key = total_key
-                            file_last_total = total
-                        ts = parse_ts(o.get("timestamp", ""))
-                        rl = (o.get("payload") or {}).get("rate_limits")
-                        if ts and rl:
-                            ts_iso = ts.isoformat()
-                            if file_g_ts is None or ts_iso > file_g_ts:
-                                file_g_ts = ts_iso
-                                file_g_limits = rl
-                                file_g_plan = rl.get("plan_type")
-                            if rl.get("limit_id") == "codex" and (file_limits_ts is None or ts_iso > file_limits_ts):
-                                file_limits_ts = ts_iso
-                                file_limits = rl
-                                file_plan = rl.get("plan_type")
-                        # Codex may emit the same cumulative snapshot twice; in that case
-                        # last_token_usage is repeated too, so counting it again overstates usage.
-                        if ts and last and not duplicate_total:
-                            dk = ts.astimezone().date().isoformat()
-                            li = last.get("input_tokens", 0) or 0
-                            lc = last.get("cached_input_tokens", 0) or 0
-                            lo = last.get("output_tokens", 0) or 0
-                            lr = last.get("reasoning_output_tokens", 0) or 0
-                            hi = li > 272_000
-                            p_in = cx_base["in"] * (2 if hi else 1)
-                            p_out = cx_base["out"] * (1.5 if hi else 1)
-                            p_cr = cx_base["cache_read"] * (2 if hi else 1)
-                            cost = (li - lc) / 1e6 * p_in + lc / 1e6 * p_cr + lo / 1e6 * p_out
-                            totals = total_key if total_key is not None else (None, None, None, None)
-                            # timestamp, local day, cumulative usage, incremental usage, cost
-                            events.append([ts.isoformat(), dk, *totals, li, lc, lo, lr, cost])
+                for line in _iter_codex_token_lines(f):
+                    try:
+                        o = json.loads(line.decode("utf-8", errors="ignore"))
+                    except Exception:
+                        continue
+                    info = (o.get("payload") or {}).get("info") or {}
+                    last = info.get("last_token_usage") or {}
+                    total = info.get("total_token_usage") or {}
+                    total_key = None
+                    duplicate_total = False
+                    if total:
+                        total_key = (total.get("input_tokens", 0) or 0,
+                                     total.get("cached_input_tokens", 0) or 0,
+                                     total.get("output_tokens", 0) or 0,
+                                     total.get("reasoning_output_tokens", 0) or 0)
+                        duplicate_total = total_key == prev_total_key
+                        prev_total_key = total_key
+                        file_last_total = total
+                    ts = parse_ts(o.get("timestamp", ""))
+                    rl = (o.get("payload") or {}).get("rate_limits")
+                    if ts and rl:
+                        ts_iso = ts.isoformat()
+                        if file_g_ts is None or ts_iso > file_g_ts:
+                            file_g_ts = ts_iso
+                            file_g_limits = rl
+                            file_g_plan = rl.get("plan_type")
+                        if rl.get("limit_id") == "codex" and (file_limits_ts is None or ts_iso > file_limits_ts):
+                            file_limits_ts = ts_iso
+                            file_limits = rl
+                            file_plan = rl.get("plan_type")
+                    # Codex may emit the same cumulative snapshot twice; in that case
+                    # last_token_usage is repeated too, so counting it again overstates usage.
+                    if ts and last and not duplicate_total:
+                        dk = ts.astimezone().date().isoformat()
+                        li = last.get("input_tokens", 0) or 0
+                        lc = last.get("cached_input_tokens", 0) or 0
+                        lo = last.get("output_tokens", 0) or 0
+                        lr = last.get("reasoning_output_tokens", 0) or 0
+                        hi = li > 272_000
+                        p_in = cx_base["in"] * (2 if hi else 1)
+                        p_out = cx_base["out"] * (1.5 if hi else 1)
+                        p_cr = cx_base["cache_read"] * (2 if hi else 1)
+                        cost = (li - lc) / 1e6 * p_in + lc / 1e6 * p_cr + lo / 1e6 * p_out
+                        totals = total_key if total_key is not None else (None, None, None, None)
+                        # timestamp, local day, cumulative usage, incremental usage, cost
+                        events.append([ts.isoformat(), dk, *totals, li, lc, lo, lr, cost])
             except OSError:
                 continue
             fc[f] = {"sig": sig, "events": events, "days": {},

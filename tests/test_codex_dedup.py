@@ -137,5 +137,43 @@ class CodexScanDedupTests(unittest.TestCase):
         self.assertEqual(len(all_usage["sessions"]), 2)
 
 
+class CodexTokenLineReaderTests(unittest.TestCase):
+    def test_skips_large_unrelated_record_and_handles_chunk_boundaries(self):
+        token = json.dumps({
+            "timestamp": "2026-07-13T01:02:03Z",
+            "type": "event_msg",
+            "payload": {"type": "token_count", "info": {}},
+        }).encode()
+        unrelated = (
+            b'{"timestamp":"2026-07-13T01:02:02Z","type":"response_item",'
+            b'"payload":{"content":"mentions \\"token_count\\" '
+            + b"x" * (2 * 1024 * 1024)
+            + b'"}}\n'
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "rollout-large.jsonl"
+            path.write_bytes(unrelated + token)
+            lines = list(USAGE._iter_codex_token_lines(
+                path, chunk_size=17, header_limit=512
+            ))
+
+        self.assertEqual(lines, [token])
+
+    def test_accepts_compact_json(self):
+        token = json.dumps({
+            "timestamp": "2026-07-13T01:02:03Z",
+            "type": "event_msg",
+            "payload": {"type": "token_count", "info": {}},
+        }, separators=(",", ":")).encode()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "rollout-compact.jsonl"
+            path.write_bytes(token + b"\n")
+            lines = list(USAGE._iter_codex_token_lines(path, chunk_size=11))
+
+        self.assertEqual(lines, [token])
+
+
 if __name__ == "__main__":
     unittest.main()
