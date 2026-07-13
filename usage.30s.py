@@ -274,7 +274,7 @@ def human(n: float) -> str:
 # ---------- 增量扫描缓存 ----------
 import tempfile as _tempfile
 _SCAN_CACHE_FILE = os.path.join(_tempfile.gettempdir(), "_tokei_scan_cache.json")
-_SCAN_CACHE_VERSION = 11
+_SCAN_CACHE_VERSION = 12
 
 
 def _load_scan_cache():
@@ -472,7 +472,13 @@ def scan_claude(bounds, cache):
             hours = [0] * 24
             dh = set()
             proj = None
-            seen_mids = set()
+            # Claude Code 流式写入同一个 message.id 多行:中间快照 output_tokens
+            # 常为 0,只有最后一行才是生成完成后的真实值(subagent 尤其明显)。
+            # 按"先到先得"去重会锁死中间的 0 值、把真正的输出 token 全部漏计;
+            # 这里改成每个 mid 只保留 output_tokens 最大的那条(input/cache 在
+            # 重复快照间保持不变,只有 output 会随流式生成增长)。
+            best_by_mid = {}
+            no_mid_records = []
             try:
                 with open(f, "r", encoding="utf-8", errors="ignore") as fh:
                     for line in fh:
@@ -482,27 +488,31 @@ def scan_claude(bounds, cache):
                         if not u:
                             continue
                         mid = u.get("mid")
-                        if mid:
-                            if mid in seen_mids:
-                                continue
-                            seen_mids.add(mid)
-                        dt = u["dt"]
-                        dk = dt.date().isoformat()
-                        day = days.setdefault(dk, {"in": 0, "out": 0, "cr": 0, "cw": 0,
-                                                   "cost": 0.0, "models": {}})
-                        day["in"] += u["in"]; day["out"] += u["out"]
-                        day["cr"] += u["cr"]; day["cw"] += u["cw"]; day["cost"] += u["cost"]
-                        mm = day["models"].setdefault(
-                            u["model"], {"in": 0, "out": 0, "cr": 0, "cw": 0, "cost": 0.0})
-                        mm["in"] += u["in"]; mm["out"] += u["out"]
-                        mm["cr"] += u["cr"]; mm["cw"] += u["cw"]; mm["cost"] += u["cost"]
-                        # Wrapped 用:小时分布 / 项目 / 会话跨度
-                        hours[dt.hour] += u["in"] + u["out"] + u["cr"] + u["cw"]
-                        dh.add(f"{dk}:{dt.hour}")
-                        if proj is None and u.get("cwd"):
-                            proj = u["cwd"]
+                        if not mid:
+                            no_mid_records.append(u)
+                            continue
+                        existing = best_by_mid.get(mid)
+                        if existing is None or u["out"] > existing["out"]:
+                            best_by_mid[mid] = u
             except OSError:
                 continue
+
+            for u in list(best_by_mid.values()) + no_mid_records:
+                dt = u["dt"]
+                dk = dt.date().isoformat()
+                day = days.setdefault(dk, {"in": 0, "out": 0, "cr": 0, "cw": 0,
+                                           "cost": 0.0, "models": {}})
+                day["in"] += u["in"]; day["out"] += u["out"]
+                day["cr"] += u["cr"]; day["cw"] += u["cw"]; day["cost"] += u["cost"]
+                mm = day["models"].setdefault(
+                    u["model"], {"in": 0, "out": 0, "cr": 0, "cw": 0, "cost": 0.0})
+                mm["in"] += u["in"]; mm["out"] += u["out"]
+                mm["cr"] += u["cr"]; mm["cw"] += u["cw"]; mm["cost"] += u["cost"]
+                # Wrapped 用:小时分布 / 项目 / 会话跨度
+                hours[dt.hour] += u["in"] + u["out"] + u["cr"] + u["cw"]
+                dh.add(f"{dk}:{dt.hour}")
+                if proj is None and u.get("cwd"):
+                    proj = u["cwd"]
             fc[f] = {"sig": sig, "days": days, "hours": hours, "dh": sorted(dh), "proj": proj}
 
     for p in stale:
