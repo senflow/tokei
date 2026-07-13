@@ -1038,8 +1038,43 @@ struct PanelView: View {
             }
             .buttonStyle(.plain)
             .tip(store.colorScheme == "light" ? "切换深色" : "切换浅色")
-            IconButton(icon: "arrow.clockwise", label: "刷新") { store.refresh() }
+            refreshButton
             IconButton(icon: "power", label: "退出") { NSApp.terminate(nil) }
+        }
+    }
+
+    @State private var refreshHover = false
+    @State private var refreshSpin = false
+
+    private var refreshButton: some View {
+        Button { store.refresh() } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: 10, weight: .semibold))
+                    .rotationEffect(.degrees(refreshSpin ? 360 : 0))
+                Text("刷新").font(.system(size: 11, weight: .medium))
+            }
+            .foregroundStyle(refreshHover ? AnyShapeStyle(Theme.tPrimary) : AnyShapeStyle(Theme.tTertiary))
+            .padding(.horizontal, 9)
+            .padding(.vertical, 4)
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(Color.primary.opacity(refreshHover ? 0.10 : 0))
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { refreshHover = $0 }
+        .onChange(of: store.refreshing) { active in
+            if active {
+                withAnimation(.linear(duration: 0.6).repeatForever(autoreverses: false)) {
+                    refreshSpin = true
+                }
+            } else {
+                var t = Transaction()
+                t.disablesAnimations = true
+                withTransaction(t) { refreshSpin = false }
+            }
         }
     }
 
@@ -1660,13 +1695,18 @@ struct PanelView: View {
         #!/bin/sh
         set -e
         cd "$HOME/.tokei/sync"
+        git rebase --abort >/dev/null 2>&1 || true
+        git merge --abort >/dev/null 2>&1 || true
         python3 "$HOME/.tokei/usage.30s.py" --json >/dev/null
         git fetch -q origin main
         device_file=$(find . -maxdepth 1 -type f -iname "$(hostname -s).json" -print -quit)
         [ -n "$device_file" ] || device_file="./$(hostname -s).json"
         git add -- "$device_file"
         git diff --cached --quiet || git commit -qm "sync $(hostname -s)"
-        git rebase -q origin/main
+        if ! git rebase -q origin/main >/dev/null 2>&1; then
+          git rebase --abort >/dev/null 2>&1 || true
+          exit 1
+        fi
         git push -q origin HEAD:main
         SH
         chmod +x ~/.tokei/tokei-sync.sh

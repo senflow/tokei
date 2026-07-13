@@ -136,13 +136,18 @@ cat > ~/.tokei/tokei-sync.sh <<'SH'
 #!/bin/sh
 set -e
 cd "$HOME/.tokei/sync"
+git rebase --abort >/dev/null 2>&1 || true
+git merge --abort >/dev/null 2>&1 || true
 python3 "$HOME/.tokei/usage.30s.py" --json >/dev/null
 git fetch -q origin main
 device_file=$(find . -maxdepth 1 -type f -iname "$(hostname -s).json" -print -quit)
 [ -n "$device_file" ] || device_file="./$(hostname -s).json"
 git add -- "$device_file"
 git diff --cached --quiet || git commit -qm "sync $(hostname -s)"
-git rebase -q origin/main
+if ! git rebase -q origin/main >/dev/null 2>&1; then
+  git rebase --abort >/dev/null 2>&1 || true
+  exit 1
+fi
 git push -q origin HEAD:main
 SH
 chmod +x ~/.tokei/tokei-sync.sh

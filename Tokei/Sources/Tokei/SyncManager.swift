@@ -412,8 +412,12 @@ final class SyncManager {
         DispatchQueue.global(qos: .utility).async {
             // 只 add 自己的设备文件、fetch+rebase+push 到 origin/main,
             // 避免多设备并发推送时互相提交/覆盖对方的同步文件。
+            // rebase 失败(冲突)时立即 abort,不能把仓库留在半 rebase 的状态,
+            // 否则对端文件会被写入冲突标记、之后再也解析不了(JSON 直接损坏)。
             let script = """
             cd '\(escapedDir)' || exit 1
+            git rebase --abort >/dev/null 2>&1
+            git merge --abort >/dev/null 2>&1
             git fetch origin main 2>/dev/null || exit 1
             device_file=$(find . -maxdepth 1 -type f -iname '\(escapedDevice).json' -print -quit)
             if [ -z "$device_file" ]; then
@@ -423,7 +427,10 @@ final class SyncManager {
             if ! git diff --cached --quiet; then
               git commit -m 'tokei sync \(escapedDevice)' || exit 1
             fi
-            git rebase origin/main 2>/dev/null || exit 1
+            if ! git rebase origin/main >/dev/null 2>&1; then
+              git rebase --abort >/dev/null 2>&1
+              exit 1
+            fi
             git push origin HEAD:main 2>/dev/null
             """
             let proc = Process()

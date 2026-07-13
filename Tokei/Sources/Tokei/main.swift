@@ -10,6 +10,7 @@ final class Store: ObservableObject {
     @Published var loadError: String?
     @Published var peers: [PeerDevice] = []
     @Published var syncing = false
+    @Published var refreshing = false
 
     let syncManager = SyncManager()
     var autoSyncTimer: Timer?
@@ -46,6 +47,7 @@ final class Store: ObservableObject {
     }
 
     func refresh() {
+        refreshing = true
         DataLoader.load { [weak self] u in
             guard let self = self else { return }
             guard let local = u else {
@@ -56,6 +58,7 @@ final class Store: ObservableObject {
                 } else {
                     self.loadError = "读取用量失败"
                     self.lastUpdated = "加载失败"
+                    self.refreshing = false
                 }
                 (NSApp.delegate as? AppDelegate)?.updateStatusTitle()
                 return
@@ -75,6 +78,7 @@ final class Store: ObservableObject {
             self.applyDisplayMode(updateStatusTitle: false)
             let f = DateFormatter(); f.dateFormat = "HH:mm:ss"
             self.lastUpdated = "更新 " + f.string(from: Date())
+            self.refreshing = false
             (NSApp.delegate as? AppDelegate)?.updateStatusTitle()
         }
     }
