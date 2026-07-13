@@ -149,6 +149,11 @@ echo '{"sync_dir":"~/.tokei/sync","device_id":"'$(hostname -s)'"}' > ~/.tokei/co
 
 ## 更新日志
 
+### v1.0.10
+- fix: Codex 实时配额抓取（plan / 周配额 / 重置时间）
+- fix: Codex 按时长检测配额窗口，跳过重复 token 快照
+- fix: 多设备同步稳定性
+
 ### v1.0.9
 - fix: 多设备同步按日期边界对齐，修正跨设备采集时差导致的 range 串台
 
