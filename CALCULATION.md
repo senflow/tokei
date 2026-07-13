@@ -194,10 +194,13 @@ Pi 优先使用会话 JSONL 中的 `usage.cost.total`；OpenCode 直接使用消
 ### Codex(rate_limits)
 
 从 rollout JSONL 中 `rate_limits` 字段读取:
-- `p5` — primary(5h)已用百分比
-- `pw` — secondary(周)已用百分比
+- 根据 `window_minutes` 识别窗口,不依赖 primary / secondary 的固定含义
+- `p5` — 5 小时窗口已用百分比(`window_minutes=300`)
+- `pw` — 周窗口已用百分比(`window_minutes=10080`)
 - `r5` / `rw` — 重置时间
 - `plan_type` — 套餐类型
+
+兼容 Codex 新旧返回结构:旧结构通常是 primary=5h、secondary=周;新结构可能只有 primary=周。
 
 ### Qoder(credit)
 
