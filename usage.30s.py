@@ -290,6 +290,71 @@ def _load_scan_cache():
         return {"v": _SCAN_CACHE_VERSION, "_dirty": True}
 
 
+import sqlite3 as _sqlite3
+import time as _time
+
+HISTORY_DB = os.path.join(_USER_DIR, "history.db")
+# 每工具不需要持久化的"过程性"大字段(目前只有 codex 的逐条快照 events,
+# 去重后已经落进 days 里,不需要再单独归档一份逐条明细)。
+_HISTORY_STRIP_KEYS = {"events"}
+
+
+def _history_conn():
+    os.makedirs(_USER_DIR, exist_ok=True)
+    conn = _sqlite3.connect(HISTORY_DB, timeout=3)
+    conn.execute("PRAGMA busy_timeout=3000")
+    conn.execute("""CREATE TABLE IF NOT EXISTS file_archive (
+        tool TEXT NOT NULL, file_key TEXT NOT NULL, payload TEXT NOT NULL,
+        updated_at INTEGER NOT NULL, PRIMARY KEY (tool, file_key))""")
+    return conn
+
+
+def _persist_tool_cache(tool, fc):
+    """把某工具当前 fc(file_key -> entry)整体 upsert 进持久化归档,每次运行都调用,
+    不管条目是刚重新扫描出来的还是缓存命中直接复用的。只存已经算好的聚合数字
+    (每天/每模型的 token 数、成本等),不存具体会话内容。源文件之后被清理掉也不
+    影响这里已经落库的历史;失败绝不能影响正常展示,纯 best-effort。"""
+    try:
+        conn = _history_conn()
+        now = int(_time.time())
+        with conn:
+            for file_key, entry in fc.items():
+                if not isinstance(entry, dict):
+                    continue
+                slim = {k: v for k, v in entry.items() if k not in _HISTORY_STRIP_KEYS}
+                conn.execute(
+                    "INSERT OR REPLACE INTO file_archive (tool, file_key, payload, updated_at) "
+                    "VALUES (?,?,?,?)",
+                    (tool, file_key, json.dumps(slim, ensure_ascii=False), now))
+        conn.close()
+    except Exception:
+        pass
+
+
+def _load_tool_archive(tool):
+    try:
+        conn = _history_conn()
+        rows = conn.execute(
+            "SELECT file_key, payload FROM file_archive WHERE tool=?", (tool,)).fetchall()
+        conn.close()
+        out = {}
+        for file_key, payload in rows:
+            try:
+                out[file_key] = json.loads(payload)
+            except Exception:
+                continue
+        return out
+    except Exception:
+        return {}
+
+
+def _merged_tool_cache(tool, fc):
+    """live fc 优先(数据更全更新),归档补上 live 里已经没有(源文件被清理掉)的条目。"""
+    merged = _load_tool_archive(tool)
+    merged.update(fc)
+    return merged
+
+
 def _save_scan_cache(cache):
     prev_keys = cache.pop("_keys", set())
     dirty = cache.pop("_dirty", False) or set(cache.keys()) != prev_keys
@@ -517,6 +582,9 @@ def scan_claude(bounds, cache):
 
     for p in stale:
         fc.pop(p, None)
+
+    _persist_tool_cache("claude", fc)
+    fc = _merged_tool_cache("claude", fc)
 
     # Assembly: per-day → range buckets
     for f, entry in fc.items():
@@ -858,6 +926,9 @@ def scan_codex(bounds, cache):
             entry["days"] = days
             cache["_dirty"] = True
 
+    _persist_tool_cache("codex", fc)
+    fc = _merged_tool_cache("codex", fc)
+
     # Assembly: per-day → range buckets
     for f, entry in fc.items():
         for dk, day in entry.get("days", {}).items():
@@ -945,11 +1016,19 @@ def _codex_quota_values(limits, now_epoch=None):
 # 日志:~/.gemini/tmp/<projectHash>/chats/session-*.json
 # assistant 行 type=="gemini",tokens={input,output,cached,thoughts,total}
 # (total=input+output+thoughts,cached⊂input)。增量快照共用 sessionId,按 lastUpdated 去重。
-def scan_gemini(bounds):
+def scan_gemini(bounds, cache):
+    fc = cache.setdefault("gemini", {})
     if not os.path.isdir(GEMINI_DIR):
-        return _empty_gemini()
-    best = {}  # sessionId -> (lastUpdated, data),同 id 取最新快照
+        _persist_tool_cache("gemini", fc)
+        fc = _merged_tool_cache("gemini", fc)
+        return _gemini_assemble(fc, bounds)
+
+    best = {}  # sessionId -> (lastUpdated, data, file_path, sig),同 id 取最新快照
     for f in glob.glob(os.path.join(GEMINI_DIR, "*", "chats", "session-*.json")):
+        try:
+            st = os.stat(f)
+        except OSError:
+            continue
         try:
             with open(f, "r", encoding="utf-8", errors="ignore") as fh:
                 d = json.load(fh)
@@ -958,12 +1037,16 @@ def scan_gemini(bounds):
         sid = d.get("sessionId") or f
         lu = d.get("lastUpdated") or ""
         if sid not in best or lu > best[sid][0]:
-            best[sid] = (lu, d)
+            sig = f"{st.st_mtime}:{st.st_size}"
+            best[sid] = (lu, d, f, sig)
 
-    B = {k: {"in": 0, "out": 0, "cached": 0, "thoughts": 0, "cost": 0.0,
-             "models": {}, "sessions": set()}
-         for k in RANGE_KEYS}
-    for sid, (lu, d) in best.items():
+    stale = set(fc.keys())
+    for sid, (lu, d, f, sig) in best.items():
+        stale.discard(sid)
+        entry = fc.get(sid)
+        if entry and entry.get("sig") == sig:
+            continue
+        days = {}
         for m in d.get("messages", []):
             if m.get("type") != "gemini":
                 continue
@@ -973,9 +1056,7 @@ def scan_gemini(bounds):
             dt = parse_ts(m.get("timestamp", ""))
             if dt is None:
                 continue
-            ks = classify(dt.astimezone(), bounds)
-            if not ks:
-                continue
+            dk = dt.astimezone().date().isoformat()
             model = m.get("model")
             inp = tk.get("input", 0) or 0
             out = tk.get("output", 0) or 0
@@ -985,15 +1066,44 @@ def scan_gemini(bounds):
             cost = (max(inp - cached, 0) / 1e6 * p["in"]
                     + cached / 1e6 * p["cache_read"]
                     + (out + th) / 1e6 * p["out"])
-            for k in ks:
+            day = days.setdefault(dk, {"in": 0, "out": 0, "cached": 0, "thoughts": 0,
+                                       "cost": 0.0, "models": {}})
+            day["in"] += inp; day["out"] += out
+            day["cached"] += cached; day["thoughts"] += th; day["cost"] += cost
+            mm = day["models"].setdefault(
+                model, {"in": 0, "out": 0, "cached": 0, "thoughts": 0, "cost": 0.0})
+            mm["in"] += inp; mm["out"] += out
+            mm["cached"] += cached; mm["thoughts"] += th; mm["cost"] += cost
+        fc[sid] = {"sig": sig, "days": days}
+
+    for p in stale:
+        fc.pop(p, None)
+
+    _persist_tool_cache("gemini", fc)
+    fc = _merged_tool_cache("gemini", fc)
+    return _gemini_assemble(fc, bounds)
+
+
+def _gemini_assemble(fc, bounds):
+    B = {k: {"in": 0, "out": 0, "cached": 0, "thoughts": 0, "cost": 0.0,
+             "models": {}, "sessions": set()}
+         for k in RANGE_KEYS}
+    for sid, entry in fc.items():
+        for dk, day in entry.get("days", {}).items():
+            try:
+                d = date.fromisoformat(dk)
+            except ValueError:
+                continue
+            for k in classify_date(d, bounds):
                 b = B[k]
                 b["sessions"].add(sid)
-                b["in"] += inp; b["out"] += out
-                b["cached"] += cached; b["thoughts"] += th; b["cost"] += cost
-                mm = b["models"].setdefault(
-                    model, {"in": 0, "out": 0, "cached": 0, "thoughts": 0, "cost": 0.0})
-                mm["in"] += inp; mm["out"] += out
-                mm["cached"] += cached; mm["thoughts"] += th; mm["cost"] += cost
+                b["in"] += day["in"]; b["out"] += day["out"]
+                b["cached"] += day["cached"]; b["thoughts"] += day["thoughts"]; b["cost"] += day["cost"]
+                for mn, mv in day.get("models", {}).items():
+                    mm = b["models"].setdefault(
+                        mn, {"in": 0, "out": 0, "cached": 0, "thoughts": 0, "cost": 0.0})
+                    mm["in"] += mv["in"]; mm["out"] += mv["out"]
+                    mm["cached"] += mv["cached"]; mm["thoughts"] += mv["thoughts"]; mm["cost"] += mv["cost"]
     return {"ranges": B}
 
 
@@ -1001,108 +1111,140 @@ def scan_gemini(bounds):
 # 日志:~/.grok/sessions/<cwd>/<uuid>/{summary.json,signals.json,events.jsonl,updates.jsonl}
 # 当前 Grok CLI 本地日志未落 prompt_tokens/completion_tokens usage;官方 API 响应有 usage。
 # 这里展示 Grok 本地可验证的上下文、轮次、工具、耗时和延迟,不估真实消耗成本。
-def scan_grok(bounds):
+def scan_grok(bounds, cache):
+    fc = cache.setdefault("grok", {})
+    latest_mtime = -1.0
+    latest_model = None
+
+    if os.path.isdir(GROK_DIR):
+        stale = set(fc.keys())
+        for sm in glob.glob(os.path.join(GROK_DIR, "*", "*", "summary.json")):
+            stale.discard(sm)
+            try:
+                st = os.stat(sm)
+            except OSError:
+                continue
+            mtime = st.st_mtime
+            sig = f"{mtime}:{st.st_size}"
+            try:
+                with open(sm, "r", encoding="utf-8", errors="ignore") as fh:
+                    s = json.load(fh)
+            except Exception:
+                continue
+            if mtime > latest_mtime:
+                latest_mtime = mtime
+                latest_model = s.get("current_model_id")
+
+            entry = fc.get(sm)
+            if entry and entry.get("sig") == sig:
+                continue
+
+            dt = parse_ts(s.get("updated_at") or s.get("created_at") or "")
+            if dt is None:
+                continue
+            dk = dt.astimezone().date().isoformat()
+
+            sig_data = {}
+            sj = os.path.join(os.path.dirname(sm), "signals.json")
+            try:
+                with open(sj, "r", encoding="utf-8", errors="ignore") as fh:
+                    sig_data = json.load(fh)
+            except Exception:
+                sig_data = {}
+
+            mx = 0
+            uj = os.path.join(os.path.dirname(sm), "updates.jsonl")
+            try:
+                with open(uj, "r", encoding="utf-8", errors="ignore") as fh:
+                    for line in fh:
+                        if "totalTokens" not in line:
+                            continue
+                        try:
+                            o = json.loads(line)
+                        except Exception:
+                            continue
+                        tt = (((o.get("params") or {}).get("_meta") or {}).get("totalTokens"))
+                        if isinstance(tt, (int, float)) and tt > mx:
+                            mx = int(tt)
+            except OSError:
+                pass
+
+            event_turns = event_tools = event_duration = event_errors = event_cancellations = 0
+            ej = os.path.join(os.path.dirname(sm), "events.jsonl")
+            try:
+                with open(ej, "r", encoding="utf-8", errors="ignore") as fh:
+                    for line in fh:
+                        try:
+                            e = json.loads(line)
+                        except Exception:
+                            continue
+                        typ = e.get("type")
+                        if typ == "turn_started":
+                            event_turns += 1
+                        elif typ == "tool_completed":
+                            event_tools += 1
+                            event_duration += int(e.get("duration_ms") or 0)
+                            if e.get("outcome") not in (None, "success"):
+                                event_errors += 1
+                        elif typ == "turn_ended" and e.get("outcome") not in (None, "completed"):
+                            event_cancellations += 1
+            except OSError:
+                pass
+
+            turns = int(sig_data.get("turnCount") or event_turns or 0)
+            tools = int(sig_data.get("toolCallCount") or event_tools or 0)
+            duration = int(sig_data.get("sessionDurationSeconds") or 0)
+            ctx_used = int(sig_data.get("contextTokensUsed") or mx or 0)
+            ctx_window = int(sig_data.get("contextWindowTokens") or 0)
+            errors = int(sig_data.get("errorCount") or 0) + int(sig_data.get("toolFailureCount") or event_errors or 0)
+            cancellations = int(sig_data.get("cancellationCount") or event_cancellations or 0)
+            latency_count = int(sig_data.get("latencySampleCount") or turns or 0)
+            ttft_sum = int(sig_data.get("avgTimeToFirstTokenMs") or 0) * latency_count
+            response_sum = int(sig_data.get("avgResponseTimeMs") or 0) * latency_count
+            token_proxy = ctx_used or mx
+            sid = (s.get("info") or {}).get("id") or sm
+
+            fc[sm] = {"sig": sig, "date": dk, "sid": sid, "metrics": {
+                "tokens": token_proxy, "turns": turns, "tools": tools, "duration": duration,
+                "ctx_used": ctx_used, "ctx_window": ctx_window, "errors": errors,
+                "cancellations": cancellations, "ttft_sum": ttft_sum,
+                "response_sum": response_sum, "latency_count": latency_count,
+            }}
+
+        for p in stale:
+            fc.pop(p, None)
+
+    _persist_tool_cache("grok", fc)
+    fc = _merged_tool_cache("grok", fc)
+
     B = {k: {"tokens": 0, "sessions": set(), "turns": 0, "tools": 0,
              "duration": 0, "ctx_used": 0, "ctx_window": 0, "errors": 0,
              "cancellations": 0, "ttft_sum": 0, "response_sum": 0, "latency_count": 0}
          for k in RANGE_KEYS}
-    latest_mtime = -1.0
-    latest_model = None
-    if not os.path.isdir(GROK_DIR):
-        return {"ranges": B, "model": None}
-    for sm in glob.glob(os.path.join(GROK_DIR, "*", "*", "summary.json")):
-        try:
-            mtime = os.path.getmtime(sm)
-        except OSError:
+    for file_key, entry in fc.items():
+        dk = entry.get("date")
+        if not dk:
             continue
         try:
-            with open(sm, "r", encoding="utf-8", errors="ignore") as fh:
-                s = json.load(fh)
-        except Exception:
+            d = date.fromisoformat(dk)
+        except ValueError:
             continue
-        if mtime > latest_mtime:
-            latest_mtime = mtime
-            latest_model = s.get("current_model_id")
-        dt = parse_ts(s.get("updated_at") or s.get("created_at") or "")
-        if dt is None:
-            continue
-        ks = classify(dt.astimezone(), bounds)
-        if not ks:
-            continue
-        sig = {}
-        sj = os.path.join(os.path.dirname(sm), "signals.json")
-        try:
-            with open(sj, "r", encoding="utf-8", errors="ignore") as fh:
-                sig = json.load(fh)
-        except Exception:
-            sig = {}
-
-        mx = 0
-        uj = os.path.join(os.path.dirname(sm), "updates.jsonl")
-        try:
-            with open(uj, "r", encoding="utf-8", errors="ignore") as fh:
-                for line in fh:
-                    if "totalTokens" not in line:
-                        continue
-                    try:
-                        o = json.loads(line)
-                    except Exception:
-                        continue
-                    tt = (((o.get("params") or {}).get("_meta") or {}).get("totalTokens"))
-                    if isinstance(tt, (int, float)) and tt > mx:
-                        mx = int(tt)
-        except OSError:
-            pass
-
-        event_turns = event_tools = event_duration = event_errors = event_cancellations = 0
-        ej = os.path.join(os.path.dirname(sm), "events.jsonl")
-        try:
-            with open(ej, "r", encoding="utf-8", errors="ignore") as fh:
-                for line in fh:
-                    try:
-                        e = json.loads(line)
-                    except Exception:
-                        continue
-                    typ = e.get("type")
-                    if typ == "turn_started":
-                        event_turns += 1
-                    elif typ == "tool_completed":
-                        event_tools += 1
-                        event_duration += int(e.get("duration_ms") or 0)
-                        if e.get("outcome") not in (None, "success"):
-                            event_errors += 1
-                    elif typ == "turn_ended" and e.get("outcome") not in (None, "completed"):
-                        event_cancellations += 1
-        except OSError:
-            pass
-
-        turns = int(sig.get("turnCount") or event_turns or 0)
-        tools = int(sig.get("toolCallCount") or event_tools or 0)
-        duration = int(sig.get("sessionDurationSeconds") or 0)
-        ctx_used = int(sig.get("contextTokensUsed") or mx or 0)
-        ctx_window = int(sig.get("contextWindowTokens") or 0)
-        errors = int(sig.get("errorCount") or 0) + int(sig.get("toolFailureCount") or event_errors or 0)
-        cancellations = int(sig.get("cancellationCount") or event_cancellations or 0)
-        latency_count = int(sig.get("latencySampleCount") or turns or 0)
-        ttft_sum = int(sig.get("avgTimeToFirstTokenMs") or 0) * latency_count
-        response_sum = int(sig.get("avgResponseTimeMs") or 0) * latency_count
-        token_proxy = ctx_used or mx
-
-        sid = (s.get("info") or {}).get("id") or sm
-        for k in ks:
+        m = entry.get("metrics", {})
+        sid = entry.get("sid") or file_key
+        for k in classify_date(d, bounds):
             b = B[k]
-            b["tokens"] += token_proxy
+            b["tokens"] += m.get("tokens", 0)
             b["sessions"].add(sid)
-            b["turns"] += turns
-            b["tools"] += tools
-            b["duration"] += duration
-            b["ctx_used"] += ctx_used
-            b["ctx_window"] += ctx_window
-            b["errors"] += errors
-            b["cancellations"] += cancellations
-            b["ttft_sum"] += ttft_sum
-            b["response_sum"] += response_sum
-            b["latency_count"] += latency_count
+            b["turns"] += m.get("turns", 0)
+            b["tools"] += m.get("tools", 0)
+            b["duration"] += m.get("duration", 0)
+            b["ctx_used"] += m.get("ctx_used", 0)
+            b["ctx_window"] += m.get("ctx_window", 0)
+            b["errors"] += m.get("errors", 0)
+            b["cancellations"] += m.get("cancellations", 0)
+            b["ttft_sum"] += m.get("ttft_sum", 0)
+            b["response_sum"] += m.get("response_sum", 0)
+            b["latency_count"] += m.get("latency_count", 0)
     return {"ranges": B, "model": latest_model}
 
 
@@ -1117,10 +1259,10 @@ def scan_qoder(bounds, cache):
     fc = cache.setdefault("qoder", {})
 
     # --- Part 1: DB (all queries cached together by sig) ---
-    db_days = {}
-    sub_chat_days = {}  # date_str → count
-    model = None
     if os.path.isfile(_QODER_DB):
+        db_days = {}
+        sub_chat_days = {}  # date_str → count
+        model = None
         try:
             sig = f"{os.path.getmtime(_QODER_DB)}:{os.path.getsize(_QODER_DB)}"
             _wal = _QODER_DB + "-wal"
@@ -1180,10 +1322,13 @@ def scan_qoder(bounds, cache):
                 pass
             fc["db"] = {"sig": sig, "days": db_days,
                         "sub_chat_days": sub_chat_days, "model": model}
-        else:
-            db_days = (entry or {}).get("days", {})
-            sub_chat_days = (entry or {}).get("sub_chat_days", {})
-            model = (entry or {}).get("model")
+
+    _persist_tool_cache("qoder", fc)
+    fc = _merged_tool_cache("qoder", fc)
+    db_entry = fc.get("db", {})
+    db_days = db_entry.get("days", {})
+    sub_chat_days = db_entry.get("sub_chat_days", {})
+    model = db_entry.get("model")
 
     # --- 汇总 DB 数据 ---
     B = {k: {"sessions": 0, "calls": 0, "sub_agents": 0,
@@ -1242,89 +1387,90 @@ def scan_qoder_ide(bounds, cache):
     except (OSError, json.JSONDecodeError, ValueError):
         return empty
 
-    if not os.path.isfile(QODER_IDE_DB):
-        return empty
-
-    try:
-        sig = f"{os.path.getmtime(QODER_IDE_DB)}:{os.path.getsize(QODER_IDE_DB)}"
-        _wal = QODER_IDE_DB + "-wal"
-        if os.path.isfile(_wal):
-            sig += f"|{os.path.getmtime(_wal)}:{os.path.getsize(_wal)}"
-    except OSError:
-        return empty
-
-    entry = fc.get("data")
-    if not entry or entry.get("sig") != sig:
-        days = {}  # date_str → {in, out, cached, session_ids, sub_agent_ids, calls, messages, duration}
-        latest_model = None
+    if os.path.isfile(QODER_IDE_DB):
         try:
-            conn = _sq.connect(f"file:{QODER_IDE_DB}?mode=ro", uri=True)
-            # token 用量 & 计数 per day
-            for row in conn.execute("""
-                SELECT date(gmt_create/1000, 'unixepoch', 'localtime') as day,
-                       COALESCE(SUM(json_extract(token_info, '$.prompt_tokens')), 0),
-                       COALESCE(SUM(json_extract(token_info, '$.completion_tokens')), 0),
-                       COALESCE(SUM(json_extract(token_info, '$.cached_tokens')), 0),
-                       COUNT(DISTINCT request_id),
-                       COUNT(*)
-                FROM chat_message
-                WHERE token_info IS NOT NULL AND token_info != ''
-                GROUP BY day
-            """):
-                dk, ti, to_, cached, calls, msgs = row
-                if not dk:
-                    continue
-                days[dk] = {"in": int(ti), "out": int(to_), "cached": int(cached),
-                            "session_ids": [], "sub_agent_ids": [],
-                            "calls": int(calls), "messages": int(msgs), "duration": 0}
-            # collect session_ids per day, split by type (user vs sub-agent)
-            sub_agent_sids = set()
+            sig = f"{os.path.getmtime(QODER_IDE_DB)}:{os.path.getsize(QODER_IDE_DB)}"
+            _wal = QODER_IDE_DB + "-wal"
+            if os.path.isfile(_wal):
+                sig += f"|{os.path.getmtime(_wal)}:{os.path.getsize(_wal)}"
+        except OSError:
+            sig = None
+
+        entry = fc.get("data")
+        if sig and (not entry or entry.get("sig") != sig):
+            days = {}  # date_str → {in, out, cached, session_ids, sub_agent_ids, calls, messages, duration}
+            latest_model = None
             try:
+                conn = _sq.connect(f"file:{QODER_IDE_DB}?mode=ro", uri=True)
+                # token 用量 & 计数 per day
                 for row in conn.execute("""
-                    SELECT session_id FROM chat_session
-                    WHERE session_type LIKE 'agent_sub_%'
+                    SELECT date(gmt_create/1000, 'unixepoch', 'localtime') as day,
+                           COALESCE(SUM(json_extract(token_info, '$.prompt_tokens')), 0),
+                           COALESCE(SUM(json_extract(token_info, '$.completion_tokens')), 0),
+                           COALESCE(SUM(json_extract(token_info, '$.cached_tokens')), 0),
+                           COUNT(DISTINCT request_id),
+                           COUNT(*)
+                    FROM chat_message
+                    WHERE token_info IS NOT NULL AND token_info != ''
+                    GROUP BY day
                 """):
-                    sub_agent_sids.add(row[0])
+                    dk, ti, to_, cached, calls, msgs = row
+                    if not dk:
+                        continue
+                    days[dk] = {"in": int(ti), "out": int(to_), "cached": int(cached),
+                                "session_ids": [], "sub_agent_ids": [],
+                                "calls": int(calls), "messages": int(msgs), "duration": 0}
+                # collect session_ids per day, split by type (user vs sub-agent)
+                sub_agent_sids = set()
+                try:
+                    for row in conn.execute("""
+                        SELECT session_id FROM chat_session
+                        WHERE session_type LIKE 'agent_sub_%'
+                    """):
+                        sub_agent_sids.add(row[0])
+                except Exception:
+                    pass
+                for row in conn.execute("""
+                    SELECT date(gmt_create/1000, 'unixepoch', 'localtime') as day,
+                           session_id
+                    FROM chat_message
+                    WHERE token_info IS NOT NULL AND token_info != ''
+                    GROUP BY day, session_id
+                """):
+                    dk, sid = row
+                    if dk and dk in days and sid:
+                        if sid in sub_agent_sids:
+                            days[dk]["sub_agent_ids"].append(sid)
+                        else:
+                            days[dk]["session_ids"].append(sid)
+                # duration per day (sum of per-request time spans)
+                for row in conn.execute("""
+                    SELECT date(min_ts/1000, 'unixepoch', 'localtime') as day,
+                           SUM(max_ts - min_ts) / 1000 as dur_sec
+                    FROM (SELECT request_id, MIN(gmt_create) as min_ts, MAX(gmt_create) as max_ts
+                          FROM chat_message GROUP BY request_id HAVING COUNT(*) > 1) sub
+                    GROUP BY day
+                """):
+                    dk, dur = row
+                    if dk and dk in days:
+                        days[dk]["duration"] = int(dur)
+                # latest model
+                row = conn.execute("""
+                    SELECT json_extract(model_info, '$.model_key') FROM chat_message
+                    WHERE model_info IS NOT NULL AND model_info != ''
+                    ORDER BY gmt_create DESC LIMIT 1
+                """).fetchone()
+                if row and row[0]:
+                    latest_model = row[0]
+                conn.close()
             except Exception:
                 pass
-            for row in conn.execute("""
-                SELECT date(gmt_create/1000, 'unixepoch', 'localtime') as day,
-                       session_id
-                FROM chat_message
-                WHERE token_info IS NOT NULL AND token_info != ''
-                GROUP BY day, session_id
-            """):
-                dk, sid = row
-                if dk and dk in days and sid:
-                    if sid in sub_agent_sids:
-                        days[dk]["sub_agent_ids"].append(sid)
-                    else:
-                        days[dk]["session_ids"].append(sid)
-            # duration per day (sum of per-request time spans)
-            for row in conn.execute("""
-                SELECT date(min_ts/1000, 'unixepoch', 'localtime') as day,
-                       SUM(max_ts - min_ts) / 1000 as dur_sec
-                FROM (SELECT request_id, MIN(gmt_create) as min_ts, MAX(gmt_create) as max_ts
-                      FROM chat_message GROUP BY request_id HAVING COUNT(*) > 1) sub
-                GROUP BY day
-            """):
-                dk, dur = row
-                if dk and dk in days:
-                    days[dk]["duration"] = int(dur)
-            # latest model
-            row = conn.execute("""
-                SELECT json_extract(model_info, '$.model_key') FROM chat_message
-                WHERE model_info IS NOT NULL AND model_info != ''
-                ORDER BY gmt_create DESC LIMIT 1
-            """).fetchone()
-            if row and row[0]:
-                latest_model = row[0]
-            conn.close()
-        except Exception:
-            pass
 
-        fc["data"] = {"sig": sig, "days": days, "model": latest_model}
-        entry = fc["data"]
+            fc["data"] = {"sig": sig, "days": days, "model": latest_model}
+
+    _persist_tool_cache("qoder_ide", fc)
+    fc = _merged_tool_cache("qoder_ide", fc)
+    entry = fc.get("data", {})
 
     # 按时间范围聚合（sessions/sub_agents 用 set 去重，避免跨天会话被多算）
     B = {k: {"in": 0, "out": 0, "cached": 0, "sessions": 0, "sub_agents": 0,
@@ -1429,6 +1575,9 @@ def scan_hermes(bounds, cache):
     for p in stale:
         fc.pop(p, None)
 
+    _persist_tool_cache("hermes", fc)
+    fc = _merged_tool_cache("hermes", fc)
+
     B = {k: {"in": 0, "out": 0, "cr": 0, "cw": 0, "reason": 0, "cost": 0.0,
              "sessions": 0, "models": {}} for k in RANGE_KEYS}
     for db_path, entry in fc.items():
@@ -1506,15 +1655,6 @@ def scan_openclaw(bounds, cache):
                 except Exception:
                     pass
                 fc["_db"] = {"sig": sig, "days": task_days}
-            for dk, day in fc.get("_db", {}).get("days", {}).items():
-                try:
-                    d = date.fromisoformat(dk)
-                except ValueError:
-                    continue
-                for k in _day_keys(d):
-                    b = B[k]
-                    b["tasks"] += day["tasks"]; b["completed"] += day["completed"]
-                    b["failed"] += day["failed"]
 
     # --- Part 2: Session JSONL token usage ---
     if os.path.isdir(OPENCLAW_AGENTS):
@@ -1582,22 +1722,37 @@ def scan_openclaw(bounds, cache):
         for p in stale:
             fc.pop(p, None)
 
-        for f, entry in fc.items():
-            if f.startswith("_"):
+    _persist_tool_cache("openclaw", fc)
+    fc = _merged_tool_cache("openclaw", fc)
+
+    # --- Bucket "_db" 任务数(即使 OPENCLAW_DB 源文件已被清理,归档仍然可用) ---
+    for dk, day in fc.get("_db", {}).get("days", {}).items():
+        try:
+            d = date.fromisoformat(dk)
+        except ValueError:
+            continue
+        for k in _day_keys(d):
+            b = B[k]
+            b["tasks"] += day["tasks"]; b["completed"] += day["completed"]
+            b["failed"] += day["failed"]
+
+    # --- Bucket 逐 session token 用量 ---
+    for f, entry in fc.items():
+        if f.startswith("_"):
+            continue
+        for dk, day in entry.get("days", {}).items():
+            try:
+                d = date.fromisoformat(dk)
+            except ValueError:
                 continue
-            for dk, day in entry.get("days", {}).items():
-                try:
-                    d = date.fromisoformat(dk)
-                except ValueError:
-                    continue
-                for k in _day_keys(d):
-                    b = B[k]
-                    b["sessions"].add(f)
-                    b["in"] += day["in"]; b["out"] += day["out"]
-                    b["cr"] += day["cr"]; b["cw"] += day["cw"]; b["cost"] += day["cost"]
-                    for mn, mv in day["models"].items():
-                        mm = b["models"].setdefault(mn, {"in": 0, "out": 0, "cost": 0.0})
-                        mm["in"] += mv["in"]; mm["out"] += mv["out"]; mm["cost"] += mv["cost"]
+            for k in _day_keys(d):
+                b = B[k]
+                b["sessions"].add(f)
+                b["in"] += day["in"]; b["out"] += day["out"]
+                b["cr"] += day["cr"]; b["cw"] += day["cw"]; b["cost"] += day["cost"]
+                for mn, mv in day["models"].items():
+                    mm = b["models"].setdefault(mn, {"in": 0, "out": 0, "cost": 0.0})
+                    mm["in"] += mv["in"]; mm["out"] += mv["out"]; mm["cost"] += mv["cost"]
 
     return {"ranges": B}
 
@@ -1707,6 +1862,9 @@ def scan_pi(bounds, cache):
     for p in stale:
         fc.pop(p, None)
 
+    _persist_tool_cache("pi", fc)
+    fc = _merged_tool_cache("pi", fc)
+
     for f, entry in fc.items():
         for dk, day in entry.get("days", {}).items():
             try:
@@ -1781,6 +1939,25 @@ def scan_opencode(bounds, cache):
 
     for p in stale:
         fc.pop(p, None)
+
+    # OpenCode 是"一条消息一个文件、边扫边桶"的结构,不像其它工具有独立的
+    # Assembly 循环,所以这里持久化之后只补一遍"归档里有、但当前 fc 里已经不在
+    # 了"的文件(避免和上面已经计过的 live 文件重复计入)。
+    _persist_tool_cache("opencode", fc)
+    archived = _load_tool_archive("opencode")
+    for file_key, entry in archived.items():
+        if file_key in fc:
+            continue
+        day_data = entry.get("day")
+        if not day_data:
+            continue
+        try:
+            dd = date.fromisoformat(day_data["date"])
+        except (ValueError, KeyError):
+            continue
+        for k in classify_date(dd, bounds):
+            _merge_token_day(B[k], day_data, day_data.get("session"))
+
     return {"ranges": B}
 
 
@@ -1884,8 +2061,8 @@ def compute():
     errors = {}
     cc = _safe_scan("claude", lambda: scan_claude(bounds, cache), _empty_claude, errors)
     cx = _safe_scan("codex", lambda: scan_codex(bounds, cache), _empty_codex, errors)
-    gm = _safe_scan("gemini", lambda: scan_gemini(bounds), _empty_gemini, errors)
-    gk = _safe_scan("grok", lambda: scan_grok(bounds), _empty_grok, errors)
+    gm = _safe_scan("gemini", lambda: scan_gemini(bounds, cache), _empty_gemini, errors)
+    gk = _safe_scan("grok", lambda: scan_grok(bounds, cache), _empty_grok, errors)
     qd = _safe_scan("qoderwork", lambda: scan_qoder(bounds, cache), _empty_qoder, errors)
     qi = _safe_scan("qoder_ide", lambda: scan_qoder_ide(bounds, cache), _empty_qoder_ide, errors)
     hm = _safe_scan("hermes", lambda: scan_hermes(bounds, cache), _empty_hermes, errors)
@@ -2445,7 +2622,7 @@ def build_daily_costs(period="all", refresh=True):
                        "p_in": 0, "p_out": 0, "p_cr": 0, "p_cw": 0, "p_reason": 0,
                        "tokens": 0, "sessions": 0}
 
-    for fp, entry in cache.get("claude", {}).items():
+    for fp, entry in _merged_tool_cache("claude", cache.get("claude", {})).items():
         for dk, day in entry.get("days", {}).items():
             if cutoff and dk < cutoff:
                 continue
@@ -2462,7 +2639,7 @@ def build_daily_costs(period="all", refresh=True):
                 m["in"] += mv.get("in", 0); m["out"] += mv.get("out", 0)
                 m["cr"] += mv.get("cr", 0); m["cw"] += mv.get("cw", 0)
 
-    for fp, entry in cache.get("codex", {}).items():
+    for fp, entry in _merged_tool_cache("codex", cache.get("codex", {})).items():
         for dk, day in entry.get("days", {}).items():
             if cutoff and dk < cutoff:
                 continue
@@ -2472,7 +2649,7 @@ def build_daily_costs(period="all", refresh=True):
             d["x_cached"] += day.get("cached", 0); d["x_reason"] += day.get("reason", 0)
             d["tokens"] += day.get("in", 0) + day.get("out", 0)
 
-    for fp, entry in cache.get("pi", {}).items():
+    for fp, entry in _merged_tool_cache("pi", cache.get("pi", {})).items():
         for dk, day in entry.get("days", {}).items():
             if cutoff and dk < cutoff:
                 continue
@@ -2489,7 +2666,7 @@ def build_daily_costs(period="all", refresh=True):
                 for key in TOKEN_FIELDS:
                     m[key] += mv.get(key, 0)
 
-    for fp, entry in cache.get("opencode", {}).items():
+    for fp, entry in _merged_tool_cache("opencode", cache.get("opencode", {})).items():
         day_data = entry.get("day")
         if not day_data:
             continue
@@ -2508,21 +2685,21 @@ def build_daily_costs(period="all", refresh=True):
             for key in TOKEN_FIELDS:
                 m[key] += mv.get(key, 0)
 
-    for fp, entry in cache.get("hermes", {}).items():
+    for fp, entry in _merged_tool_cache("hermes", cache.get("hermes", {})).items():
         for dk, day in entry.get("days", {}).items():
             if cutoff and dk < cutoff:
                 continue
             d = days.setdefault(dk, _empty())
             d["tokens"] += token_total(day)
 
-    for fp, entry in cache.get("qoder", {}).items():
+    for fp, entry in _merged_tool_cache("qoder", cache.get("qoder", {})).items():
         for dk, day in entry.get("days", {}).items():
             if cutoff and dk < cutoff:
                 continue
             d = days.setdefault(dk, _empty())
             d["tokens"] += day.get("in", 0) + day.get("out", 0)
 
-    for fp, entry in cache.get("qoder_ide", {}).items():
+    for fp, entry in _merged_tool_cache("qoder_ide", cache.get("qoder_ide", {})).items():
         model_name = entry.get("model") or "Qoder"
         for dk, day in entry.get("days", {}).items():
             if cutoff and dk < cutoff:
@@ -2618,7 +2795,7 @@ def build_wrapped(period="all", refresh=True):
     total_cost = 0.0
 
     # --- Claude (有 hours / proj / models) ---
-    fc = cache.get("claude", {})
+    fc = _merged_tool_cache("claude", cache.get("claude", {}))
     for f, entry in fc.items():
         if not isinstance(entry, dict):
             continue
@@ -2644,7 +2821,7 @@ def build_wrapped(period="all", refresh=True):
                 model_tok[nm] = model_tok.get(nm, 0) + token_total(mv)
 
     # --- Codex (in + out; in 已含 cached, out 已含 reason) ---
-    for f, entry in cache.get("codex", {}).items():
+    for f, entry in _merged_tool_cache("codex", cache.get("codex", {})).items():
         if not isinstance(entry, dict):
             continue
         for dk, day in entry.get("days", {}).items():
@@ -2657,7 +2834,7 @@ def build_wrapped(period="all", refresh=True):
             weekday[date.fromisoformat(dk).weekday()] += tok
 
     # --- Hermes (in + out + cr + cw + reason) ---
-    for f, entry in cache.get("hermes", {}).items():
+    for f, entry in _merged_tool_cache("hermes", cache.get("hermes", {})).items():
         if not isinstance(entry, dict):
             continue
         for dk, day in entry.get("days", {}).items():
@@ -2670,7 +2847,7 @@ def build_wrapped(period="all", refresh=True):
             weekday[date.fromisoformat(dk).weekday()] += tok
 
     # --- OpenClaw (in + out + cr + cw) ---
-    for f, entry in cache.get("openclaw", {}).items():
+    for f, entry in _merged_tool_cache("openclaw", cache.get("openclaw", {})).items():
         if not isinstance(entry, dict):
             continue
         for dk, day in entry.get("days", {}).items():
@@ -2683,7 +2860,7 @@ def build_wrapped(period="all", refresh=True):
             weekday[date.fromisoformat(dk).weekday()] += tok
 
     # --- OpenCode (in + out + cr + cw + reason) ---
-    for f, entry in cache.get("opencode", {}).items():
+    for f, entry in _merged_tool_cache("opencode", cache.get("opencode", {})).items():
         if not isinstance(entry, dict):
             continue
         for dk, day in entry.get("days", {}).items():
@@ -2696,7 +2873,7 @@ def build_wrapped(period="all", refresh=True):
             weekday[date.fromisoformat(dk).weekday()] += tok
 
     # --- Pi Coding Agent (in + out + cr + cw + reason) ---
-    for f, entry in cache.get("pi", {}).items():
+    for f, entry in _merged_tool_cache("pi", cache.get("pi", {})).items():
         if not isinstance(entry, dict):
             continue
         for dk, day in entry.get("days", {}).items():
@@ -2712,7 +2889,7 @@ def build_wrapped(period="all", refresh=True):
                 model_tok[nm] = model_tok.get(nm, 0) + token_total(mv)
 
     # --- QoderWork (in + out, no cost) ---
-    for f, entry in cache.get("qoder", {}).items():
+    for f, entry in _merged_tool_cache("qoder", cache.get("qoder", {})).items():
         if not isinstance(entry, dict):
             continue
         for dk, day in entry.get("days", {}).items():
@@ -2724,7 +2901,7 @@ def build_wrapped(period="all", refresh=True):
             weekday[date.fromisoformat(dk).weekday()] += tok
 
     # --- Qoder IDE (in + out, no cost; cached is subset of in) ---
-    for f, entry in cache.get("qoder_ide", {}).items():
+    for f, entry in _merged_tool_cache("qoder_ide", cache.get("qoder_ide", {})).items():
         if not isinstance(entry, dict):
             continue
         model_name = entry.get("model") or "Qoder"
@@ -2742,7 +2919,7 @@ def build_wrapped(period="all", refresh=True):
     if period in ("all", "365d"):
         try:
             bounds = range_bounds()
-            gm = scan_gemini(bounds)
+            gm = scan_gemini(bounds, cache)
             yr = gm["ranges"].get("year", {})
             gm_tok = yr.get("in", 0) + yr.get("out", 0) + yr.get("cached", 0) + yr.get("thoughts", 0)
             total_tokens += gm_tok
@@ -2753,7 +2930,7 @@ def build_wrapped(period="all", refresh=True):
     # --- Grok (无缓存,需重新扫描取 year 总量;仅 all/365d 包含) ---
     if period in ("all", "365d"):
         try:
-            gk = scan_grok(bounds if period == "all" else range_bounds())
+            gk = scan_grok(bounds if period == "all" else range_bounds(), cache)
             gk_tok = gk["ranges"].get("year", {}).get("tokens", 0)
             total_tokens += gk_tok
         except Exception:
@@ -2804,7 +2981,7 @@ def projects():
     proj_map = {}  # path → {sessions, tokens, cost, last_active, model_tok}
 
     # Claude sessions
-    for f, entry in cache.get("claude", {}).items():
+    for f, entry in _merged_tool_cache("claude", cache.get("claude", {})).items():
         if not isinstance(entry, dict):
             continue
         proj_path = entry.get("proj") or ""
@@ -2825,7 +3002,7 @@ def projects():
                 p["model_tok"][nm] = p["model_tok"].get(nm, 0) + token_total(mv)
 
     # Pi sessions
-    for f, entry in cache.get("pi", {}).items():
+    for f, entry in _merged_tool_cache("pi", cache.get("pi", {})).items():
         if not isinstance(entry, dict):
             continue
         proj_path = entry.get("proj") or ""
