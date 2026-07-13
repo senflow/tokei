@@ -12,19 +12,36 @@ final class Store: ObservableObject {
     @Published var syncing = false
 
     let syncManager = SyncManager()
-    let keepAwake = KeepAwake()
-    let sitReminder = SitReminder()
     var autoSyncTimer: Timer?
 
-    @AppStorage("showAllDevices") var showAllDevices = true
+    // 数据范围: "__all__"(全部合并)、"__local__"(仅本机)、或某台 peer 的 deviceId。
+    static let allScope = "__all__"
+    static let localScope = "__local__"
+    @AppStorage("deviceScope") var deviceScope: String = Store.allScope
     @AppStorage("syncEnabled") var syncEnabled = false
+    @AppStorage("preferredColorScheme") var colorScheme: String = "light"
 
     private var retryCount = 0
 
     func applyDisplayMode(updateStatusTitle: Bool = true) {
-        usage = (syncEnabled && showAllDevices) ? (allDevicesUsage ?? localUsage) : localUsage
+        usage = resolvedUsage()
         if updateStatusTitle {
             (NSApp.delegate as? AppDelegate)?.updateStatusTitle()
+        }
+    }
+
+    private func resolvedUsage() -> Usage? {
+        guard syncEnabled else { return localUsage }
+        switch deviceScope {
+        case Store.allScope:
+            return allDevicesUsage ?? localUsage
+        case Store.localScope:
+            return localUsage
+        default:
+            if let peer = peers.first(where: { $0.deviceId == deviceScope }) {
+                return peer.usage
+            }
+            return allDevicesUsage ?? localUsage
         }
     }
 
@@ -89,9 +106,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var timer: Timer?
     var globalMouseMonitor: Any?
 
-    // 菜单栏家族品牌色(与面板 Theme.claude/codex 一致)。
-    static let claudeColor = NSColor(red: 0.92, green: 0.52, blue: 0.40, alpha: 1)
-    static let codexColor  = NSColor(red: 0.42, green: 0.68, blue: 0.98, alpha: 1)
+    // Menu bar icon colour
+    static let iconColor = NSColor.white
 
     func applicationDidFinishLaunching(_ note: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -111,7 +127,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 确保随后的 refresh() 触发的 Python 扫描能读到正确的 qoder_ide_enabled。
         PanelView.syncQoderIdeConfigOnLaunch()
         store.refresh()
-        store.sitReminder.updateRunning()
         Updater.shared.checkForUpdate()
         autoFetchPricing()
         timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
@@ -137,72 +152,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func updateStatusTitle() {
         guard let b = statusItem?.button else { return }
-        let s = NSMutableAttributedString()
-        let font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .semibold)
-
-        // 一格 = 时钟图标 + 当前额度剩余%,按家族品牌色着色(橙=Claude 青=Codex)。
-        func seg(_ value: String, _ color: NSColor) {
-            if s.length > 0 {
-                s.append(NSAttributedString(string: "  ", attributes: [.font: font]))
-            }
-            let cfg = NSImage.SymbolConfiguration(pointSize: 12, weight: .semibold)
-                .applying(NSImage.SymbolConfiguration(paletteColors: [color]))
-            let img = NSImage(systemSymbolName: "clock.fill", accessibilityDescription: nil)?
-                .withSymbolConfiguration(cfg)
-            img?.isTemplate = false
-            let att = NSTextAttachment(); att.image = img
-            s.append(NSAttributedString(attachment: att))
-            s.append(NSAttributedString(string: " " + value,
-                attributes: [.font: font, .baselineOffset: 1, .foregroundColor: color]))
-        }
-
-        if store.keepAwake.active {
-            let cfg = NSImage.SymbolConfiguration(pointSize: 12, weight: .semibold)
-                .applying(NSImage.SymbolConfiguration(paletteColors: [Self.claudeColor]))
-            let img = NSImage(systemSymbolName: "cup.and.saucer.fill", accessibilityDescription: nil)?
-                .withSymbolConfiguration(cfg)
-            img?.isTemplate = false
-            let att = NSTextAttachment(); att.image = img
-            s.append(NSAttributedString(attachment: att))
-        }
-
-        if let u = store.usage {
-            let ud = UserDefaults.standard
-            if ud.object(forKey: "showClaude") as? Bool ?? true,
-               let q5 = u.claude.q5 { seg(String(format: "%.0f", 100 - q5), Self.claudeColor) }
-            if ud.object(forKey: "showCodex") as? Bool ?? true,
-               let quota = u.codex.p5 ?? u.codex.pw {
-                seg(String(format: "%.0f", 100 - quota), Self.codexColor)
-            }
-            if s.length == 0 {
-                let showC = ud.object(forKey: "showClaude") as? Bool ?? true
-                let showX = ud.object(forKey: "showCodex") as? Bool ?? true
-                let showP = ud.object(forKey: "showPi") as? Bool ?? true
-                let showO = ud.object(forKey: "showOpenCode") as? Bool ?? true
-                let showQ = ud.object(forKey: "showQoderIde") as? Bool ?? false
-                var total = 0
-                if showC { let r = u.claude.ranges.get(.today); total += Int(r.in + r.out + r.cr + r.cw) }
-                if showX { let r = u.codex.ranges.get(.today); total += Int(r.in + r.out + r.cached + r.reason) }
-                if showP { let r = u.pi.ranges.get(.today); total += Int(r.in + r.out + r.cr + r.cw + r.reason) }
-                if showO { let r = u.opencode.ranges.get(.today); total += Int(r.in + r.out + r.cr + r.cw + r.reason) }
-                if showQ { let r = u.qoder.ranges.get(.today); total += Int(r.in + r.out + r.cached) }
-                if total > 0 {
-                    seg(Fmt.human(total), .secondaryLabelColor)
-                } else {
-                    let cfg = NSImage.SymbolConfiguration(pointSize: 14, weight: .semibold)
-                        .applying(NSImage.SymbolConfiguration(paletteColors: [Self.claudeColor]))
-                    let img = NSImage(systemSymbolName: "timer", accessibilityDescription: nil)?
-                        .withSymbolConfiguration(cfg)
-                    img?.isTemplate = false
-                    let att = NSTextAttachment(); att.image = img
-                    s.append(NSAttributedString(attachment: att))
-                }
-            }
-        } else {
-            seg("…", .secondaryLabelColor)                        // 加载中
-        }
-        b.attributedTitle = s
-        b.image = nil
+        let cfg = NSImage.SymbolConfiguration(pointSize: 14, weight: .semibold)
+            .applying(NSImage.SymbolConfiguration(paletteColors: [Self.iconColor]))
+        let img = NSImage(systemSymbolName: "timer", accessibilityDescription: nil)?
+            .withSymbolConfiguration(cfg)
+        img?.isTemplate = false
+        b.image = img
+        b.imagePosition = .imageOnly
+        b.attributedTitle = NSAttributedString()
     }
 
     func autoFetchPricing() {
@@ -243,7 +200,7 @@ enum Shot {
             store.usage = usage
             store.lastUpdated = "预览"
             let content = PanelView(store: store, scrollable: false)
-                .background(Color(red: 0.22, green: 0.23, blue: 0.26))
+                .background(Color(red: 0.11, green: 0.11, blue: 0.13))
             let renderer = ImageRenderer(content: content)
             renderer.scale = 2
             if let cg = renderer.cgImage {

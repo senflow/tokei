@@ -208,6 +208,7 @@ final class SyncManager {
             d.in += s.in; d.out += s.out; d.cached += s.cached
             d.reason += s.reason; d.cost += s.cost; d.sessions += s.sessions
             d.hit = hitRate(cached: d.cached, input: d.in)
+            mergeCodexModels(&d.models, s.models)
             dst.set(pair.dst, d)
         }
     }
@@ -341,6 +342,21 @@ final class SyncManager {
         dst.sort { $0.cost > $1.cost }
     }
 
+    private static func mergeCodexModels(_ dst: inout [CodexModelStat], _ src: [CodexModelStat]) {
+        for m in src {
+            if let idx = dst.firstIndex(where: { $0.name == m.name }) {
+                dst[idx].in += m.in
+                dst[idx].cached += m.cached
+                dst[idx].out += m.out
+                dst[idx].reason += m.reason
+                dst[idx].cost += m.cost
+            } else {
+                dst.append(m)
+            }
+        }
+        dst.sort { $0.cost > $1.cost }
+    }
+
     private static func mergeGeminiModels(_ dst: inout [GeminiModelStat], _ src: [GeminiModelStat]) {
         for m in src {
             if let idx = dst.firstIndex(where: { $0.name == m.name }) {
@@ -394,6 +410,8 @@ final class SyncManager {
         let escapedDir = dir.replacingOccurrences(of: "'", with: "'\\''")
         let escapedDevice = cfg.device_id.replacingOccurrences(of: "'", with: "'\\''")
         DispatchQueue.global(qos: .utility).async {
+            // 只 add 自己的设备文件、fetch+rebase+push 到 origin/main,
+            // 避免多设备并发推送时互相提交/覆盖对方的同步文件。
             let script = """
             cd '\(escapedDir)' || exit 1
             git fetch origin main 2>/dev/null || exit 1

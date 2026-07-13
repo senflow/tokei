@@ -145,7 +145,7 @@ struct ProjectTrailView: View {
                 HStack(spacing: 5) {
                     Image(systemName: "folder.fill")
                         .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(Theme.claude.opacity(0.8))
+                        .foregroundStyle(Theme.primary.opacity(0.8))
                     Text(p.name)
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(Theme.tPrimary)

@@ -3,12 +3,14 @@ import SwiftUI
 struct VisualEffect: NSViewRepresentable {
     func makeNSView(context: Context) -> NSVisualEffectView {
         let v = NSVisualEffectView()
-        v.material = .hudWindow
+        v.material = Theme.isDark ? .hudWindow : .menu
         v.blendingMode = .behindWindow
         v.state = .active
         return v
     }
-    func updateNSView(_ v: NSVisualEffectView, context: Context) {}
+    func updateNSView(_ v: NSVisualEffectView, context: Context) {
+        v.material = Theme.isDark ? .hudWindow : .menu
+    }
 }
 
 private class PassthroughView: NSView {
@@ -27,72 +29,102 @@ extension View {
     func tip(_ text: String) -> some View { overlay(Tip(text: text)) }
 }
 
-// 设计系统:颜色 / 间距 / 圆角集中定义,组件语义化复用。
+// Design system — inspired by cc-switch's Tailwind / shadcn-ui design language.
+// Blue primary accent, clean bordered cards, consistent spacing and radius.
 enum Theme {
-    static let claude = Color(red: 0.92, green: 0.52, blue: 0.40)   // 柔珊瑚
-    static let codex  = Color(red: 0.42, green: 0.68, blue: 0.98)   // 天青
-    static let gemini = Color(red: 0.62, green: 0.52, blue: 0.92)   // 薰衣草
-    static let grok   = Color(red: 0.65, green: 0.68, blue: 0.75)   // 冷灰银
-    static let qoder  = Color(red: 0.90, green: 0.75, blue: 0.35)   // 琥珀金
-    static let qoderwork = Color(red: 0.75, green: 0.65, blue: 0.30)  // 暗琥珀
-    static let hermes = Color(red: 0.40, green: 0.82, blue: 0.60)   // 翠绿
-    static let openclaw = Color(red: 0.85, green: 0.45, blue: 0.68) // 玫红
-    static let pi = Color(red: 0.74, green: 0.58, blue: 0.95)       // 柔紫
-    static let opencode = Color(red: 0.55, green: 0.75, blue: 0.90) // 天蓝灰
+    // Primary accent (cc-switch blue ~ #0A84FF)
+    static let primary   = Color(red: 0.04, green: 0.52, blue: 1.0)
+    static let primaryBg = Color(red: 0.04, green: 0.52, blue: 1.0).opacity(0.12)
 
+    // Tool / model tints — kept distinct for data visualisation
+    static let claude    = Color(red: 0.92, green: 0.52, blue: 0.40)   // warm coral
+    static let codex     = Color(red: 0.42, green: 0.68, blue: 0.98)   // sky blue
+    static let gemini    = Color(red: 0.62, green: 0.52, blue: 0.92)   // lavender
+    static let grok      = Color(red: 0.65, green: 0.68, blue: 0.75)   // cool silver
+    static let qoder     = Color(red: 0.90, green: 0.75, blue: 0.35)   // amber gold
+    static let qoderwork = Color(red: 0.75, green: 0.65, blue: 0.30)   // dark amber
+    static let hermes    = Color(red: 0.40, green: 0.82, blue: 0.60)   // emerald
+    static let openclaw  = Color(red: 0.85, green: 0.45, blue: 0.68)   // rose
+    static let pi        = Color(red: 0.74, green: 0.58, blue: 0.95)   // soft purple
+    static let opencode  = Color(red: 0.55, green: 0.75, blue: 0.90)   // sky grey
+
+    // Layout
     static let panelWidth: CGFloat = 322
-    static let cardRadius: CGFloat = 16
+    static let cardRadius: CGFloat = 14
     static let outerPad: CGFloat = 15
 
+    // Current colour scheme — set by PanelView before rendering
+    static var isDark: Bool = true
+
+    // Brand gradient (blue primary — cc-switch style)
     static var brand: LinearGradient {
-        LinearGradient(colors: [claude.opacity(0.8), claude],
+        LinearGradient(colors: [primary.opacity(0.85), primary],
                        startPoint: .leading, endPoint: .trailing)
     }
 
+    // Background
     static var bg: LinearGradient {
-        LinearGradient(colors: [Color(red: 0.20, green: 0.21, blue: 0.25).opacity(0.92),
-                                Color(red: 0.12, green: 0.13, blue: 0.16).opacity(0.95)],
-                       startPoint: .top, endPoint: .bottom)
+        isDark
+            ? LinearGradient(
+                colors: [Color(red: 0.11, green: 0.11, blue: 0.13).opacity(0.96),
+                         Color(red: 0.10, green: 0.10, blue: 0.12).opacity(0.98)],
+                startPoint: .top, endPoint: .bottom)
+            : LinearGradient(
+                colors: [Color(red: 0.95, green: 0.95, blue: 0.97).opacity(0.96),
+                         Color(red: 0.90, green: 0.90, blue: 0.93).opacity(0.98)],
+                startPoint: .top, endPoint: .bottom)
     }
 
-    static let tPrimary   = Color.white.opacity(0.97)
-    static let tSecondary = Color.white.opacity(0.82)
-    static let tTertiary  = Color.white.opacity(0.58)
+    static var cardBg: Color {
+        isDark ? Color(red: 0.15, green: 0.15, blue: 0.17)
+               : Color(red: 0.97, green: 0.97, blue: 0.98)
+    }
+
+    static var border: Color {
+        isDark ? Color.white.opacity(0.08)
+               : Color.black.opacity(0.10)
+    }
+
+    // Text hierarchy
+    static var tPrimary: Color {
+        isDark ? Color.white.opacity(0.95) : Color.black.opacity(0.88)
+    }
+    static var tSecondary: Color {
+        isDark ? Color.white.opacity(0.65) : Color.black.opacity(0.60)
+    }
+    static var tTertiary: Color {
+        isDark ? Color.white.opacity(0.45) : Color.black.opacity(0.45)
+    }
 }
 
-// 毛玻璃之上的浮起卡片:淡色填充 + 渐变描边 + 柔和投影。
+// Card — clean bordered card with subtle hover lift.  Mirrors cc-switch ProviderCard.
 struct Card<Content: View>: View {
     var tint: Color
     @ViewBuilder var content: () -> Content
     @State private var hover = false
+
     var body: some View {
         content()
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .padding(13)
             .background(
                 RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous)
-                    .fill(Color.black.opacity(0.26))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous)
-                            .fill(tint.opacity(0.08))
-                    )
-                    .overlay(alignment: .top) {
-                        RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous)
-                            .fill(LinearGradient(
-                                colors: [Color.white.opacity(0.05), .clear],
-                                startPoint: .top, endPoint: .center))
-                    }
+                    .fill(Theme.cardBg)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous)
-                    .strokeBorder(
-                        LinearGradient(colors: [tint.opacity(0.38), tint.opacity(0.05)],
-                                       startPoint: .topLeading, endPoint: .bottomTrailing),
-                        lineWidth: 0.75)
+                    .strokeBorder(Theme.border, lineWidth: 0.5)
             )
-            .shadow(color: Color.black.opacity(hover ? 0.42 : 0.30),
-                    radius: hover ? 16 : 12, x: 0, y: hover ? 9 : 6)
-            .scaleEffect(hover ? 1.012 : 1)
+            .overlay(alignment: .topLeading) {
+                RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous)
+                    .fill(LinearGradient(
+                        colors: [Theme.isDark ? Color.white.opacity(0.03) : Color.black.opacity(0.02), .clear],
+                        startPoint: .top, endPoint: .center))
+                    .allowsHitTesting(false)
+            }
+            .shadow(color: Theme.isDark ? .black.opacity(hover ? 0.40 : 0.25) : .black.opacity(hover ? 0.12 : 0.06),
+                    radius: hover ? 14 : 10, x: 0, y: hover ? 8 : 5)
+            .scaleEffect(hover ? 1.01 : 1)
             .onHover { hover = $0 }
             .animation(.easeOut(duration: 0.18), value: hover)
     }
@@ -138,7 +170,7 @@ struct EqualHeightGrid: Layout {
     }
 }
 
-// 命中率环形仪表 —— 卡片视觉焦点之一。
+// Ring gauge — cache-hit rate circular indicator.
 struct RingGauge: View {
     var value: Double            // 0...100
     var tint: Color
@@ -165,7 +197,7 @@ struct RingGauge: View {
     }
 }
 
-// 细进度条(配额用)。
+// Thin progress bar (quota usage).
 struct MiniBar: View {
     var value: Double            // 0...100
     var tint: Color
@@ -183,7 +215,7 @@ struct MiniBar: View {
     }
 }
 
-// 排行条:细 Capsule + 中性轨道,对数刻度。模型/项目共用。
+// Stat bar — capsule bar with sqrt scale, used for model / project rankings.
 struct StatBar: View {
     var name: String
     var tokens: Int
@@ -212,7 +244,7 @@ struct StatBar: View {
     }
 }
 
-// 指标格子:图标 + 标签 + 等宽数值。
+// Metric cell — icon + label + monospaced value.
 struct MetricCell: View {
     var icon: String
     var label: String
@@ -266,7 +298,7 @@ struct RingMetricCell: View {
     }
 }
 
-// 大号成本焦点行。
+// Large cost headline row.
 struct CostHeadline: View {
     var value: String
     var caption: String
@@ -275,7 +307,7 @@ struct CostHeadline: View {
         HStack(alignment: .firstTextBaseline, spacing: 7) {
             Text(value)
                 .font(.system(size: 23, weight: .bold, design: .rounded))
-                .foregroundStyle(.white)
+                .foregroundStyle(Theme.tPrimary)
                 .contentTransition(.numericText())
             Text(caption)
                 .font(.system(size: 10))
@@ -285,7 +317,7 @@ struct CostHeadline: View {
     }
 }
 
-// 自定义滑动分段控件(替代原生 segmented),选中态滑动高亮。
+// Custom segmented tabs — blue primary active state (cc-switch style).
 struct SegmentedTabs: View {
     @Binding var sel: RangeKey
     @Namespace private var ns
@@ -294,18 +326,17 @@ struct SegmentedTabs: View {
             ForEach(RangeKey.displayCases) { k in
                 let on = k == sel
                 Text(k.label)
-                    .font(.system(size: 12, weight: on ? .semibold : .regular))
-                    .foregroundStyle(on ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+                    .font(.system(size: 11.5, weight: on ? .semibold : .regular))
+                    .foregroundStyle(on ? AnyShapeStyle(Theme.tPrimary) : AnyShapeStyle(Theme.tTertiary))
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 5)
                     .background {
                         if on {
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .fill(.ultraThinMaterial)
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .fill(Theme.primary.opacity(0.18))
                                 .overlay(
-                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                        .strokeBorder(Color.primary.opacity(0.14), lineWidth: 1))
-                                .shadow(color: .black.opacity(0.18), radius: 3, y: 1)
+                                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                        .strokeBorder(Theme.primary.opacity(0.35), lineWidth: 1))
                                 .matchedGeometryEffect(id: "seg", in: ns)
                         }
                     }
@@ -317,13 +348,13 @@ struct SegmentedTabs: View {
         }
         .padding(3)
         .background(
-            RoundedRectangle(cornerRadius: 11, style: .continuous)
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(Color.primary.opacity(0.06))
         )
     }
 }
 
-// 底部图标按钮,带 hover 高亮。
+// Footer icon button with hover highlight.
 struct IconButton: View {
     var icon: String
     var label: String
@@ -335,7 +366,7 @@ struct IconButton: View {
                 Image(systemName: icon).font(.system(size: 10, weight: .semibold))
                 Text(label).font(.system(size: 11, weight: .medium))
             }
-            .foregroundStyle(hover ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+            .foregroundStyle(hover ? AnyShapeStyle(Theme.tPrimary) : AnyShapeStyle(Theme.tTertiary))
             .padding(.horizontal, 9)
             .padding(.vertical, 4)
             .background(

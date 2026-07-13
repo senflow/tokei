@@ -70,6 +70,7 @@ struct DashboardView: View {
     @State private var loading = true
     @State private var wrappedPeriod: WrappedPeriod = .all
     @AppStorage("hideProjects") private var hideProjects = false
+    @AppStorage("hideModels") private var hideModels = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -93,7 +94,7 @@ struct DashboardView: View {
             }
         }
         .onAppear { loadData(showLoading: true) }
-        .onChange(of: store.showAllDevices) { _ in applyCachedScope(animated: true) }
+        .onChange(of: store.deviceScope) { _ in applyCachedScope(animated: true) }
         .onChange(of: store.syncEnabled) { _ in applyCachedScope(animated: true) }
         .onReceive(store.$usage) { _ in applyCachedScope(animated: false) }
     }
@@ -107,12 +108,31 @@ struct DashboardView: View {
         let top = Array(sorted.prefix(8))
         let maxTokens = Double(top.first?.tokens ?? 1)
         return VStack(alignment: .leading, spacing: 9) {
-            Text("模型用量").font(.system(size: 13, weight: .bold))
-            ForEach(top) { m in
-                StatBar(name: m.name,
-                        tokens: m.tokens ?? ((m.in ?? 0) + (m.out ?? 0)),
-                        cost: m.cost, maxTokens: maxTokens,
-                        tint: modelTint(m.tool))
+            Button {
+                withAnimation(.easeInOut(duration: 0.25)) { hideModels.toggle() }
+            } label: {
+                HStack(spacing: 5) {
+                    Text("模型用量").font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(Theme.tPrimary)
+                    Image(systemName: hideModels ? "eye.slash.fill" : "eye")
+                        .font(.system(size: 9)).foregroundStyle(Theme.tTertiary)
+                    Spacer()
+                    Image(systemName: hideModels ? "chevron.down" : "chevron.up")
+                        .font(.system(size: 9, weight: .bold)).foregroundStyle(Theme.tTertiary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            if hideModels {
+                Text("已隐藏 \(top.count) 个模型")
+                    .font(.system(size: 10)).foregroundStyle(Theme.tTertiary)
+            } else {
+                ForEach(top) { m in
+                    StatBar(name: m.name,
+                            tokens: m.tokens ?? ((m.in ?? 0) + (m.out ?? 0)),
+                            cost: m.cost, maxTokens: maxTokens,
+                            tint: modelTint(m.tool))
+                }
             }
         }
     }
@@ -127,7 +147,7 @@ struct DashboardView: View {
         case "openclaw": return Theme.openclaw
         case "pi": return Theme.pi
         case "opencode": return Theme.opencode
-        default: return Theme.claude
+        default: return Theme.primary
         }
     }
 
@@ -156,7 +176,7 @@ struct DashboardView: View {
             } else {
                 ForEach(projects) { p in
                     StatBar(name: p.name, tokens: p.tokens, cost: p.cost,
-                            maxTokens: maxTok, tint: Theme.claude)
+                            maxTokens: maxTok, tint: Theme.primary)
                 }
             }
         }
@@ -179,7 +199,17 @@ struct DashboardView: View {
                 .pickerStyle(.segmented)
                 .frame(width: 120)
                 .controlSize(.mini)
-                .onChange(of: heatRange) { _ in selectedCell = nil }
+                .onChange(of: heatRange) { newValue in
+                    // 切换周期时保留选中日期,除非它不在新周期的可见范围内。
+                    guard let sel = selectedCell, let selDate = Self.parseYMD(sel) else {
+                        selectedCell = nil
+                        return
+                    }
+                    let days = newValue == 0 ? 7 : (newValue == 1 ? 35 : 371)
+                    let cal = Calendar.current
+                    let start = cal.date(byAdding: .day, value: -(days - 1), to: cal.startOfDay(for: Date()))!
+                    if selDate < start { selectedCell = nil }
+                }
             }
             if heatRange == 0 { weekStrip } else { heatmapGrid }
             if let sel = selectedCell, let day = daily.first(where: { $0.date == sel }) {
@@ -197,7 +227,7 @@ struct DashboardView: View {
                 Spacer()
                 Text(String(format: "$%.2f", d.total))
                     .font(.system(size: 15, weight: .bold, design: .rounded))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Theme.tPrimary)
                 Button { selectedCell = nil } label: {
                     Image(systemName: "xmark.circle.fill").font(.system(size: 12))
                         .foregroundStyle(Theme.tTertiary)
@@ -241,7 +271,7 @@ struct DashboardView: View {
         .background(RoundedRectangle(cornerRadius: 12, style: .continuous)
             .fill(Color.black.opacity(0.3))
             .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(Theme.claude.opacity(0.2), lineWidth: 0.5)))
+                .strokeBorder(Theme.primary.opacity(0.2), lineWidth: 0.5)))
     }
 
     var weekStrip: some View {
@@ -274,7 +304,7 @@ struct DashboardView: View {
                                 .frame(width: 20, height: 20)
                                 .overlay(
                                     RoundedRectangle(cornerRadius: 3, style: .continuous)
-                                        .strokeBorder(selectedCell == ds ? Theme.claude : .clear, lineWidth: 1.5)
+                                        .strokeBorder(selectedCell == ds ? Theme.primary : .clear, lineWidth: 1.5)
                                 )
                                 .onTapGesture {
                                     withAnimation(.easeOut(duration: 0.2)) {
@@ -351,7 +381,7 @@ struct DashboardView: View {
                                         .frame(width: cellSize, height: cellSize)
                                     .overlay(
                                         RoundedRectangle(cornerRadius: radius, style: .continuous)
-                                            .strokeBorder(selectedCell == ds ? Theme.claude : .clear, lineWidth: 2)
+                                            .strokeBorder(selectedCell == ds ? Theme.primary : .clear, lineWidth: 2)
                                     )
                                     .onTapGesture {
                                         withAnimation(.easeOut(duration: 0.2)) {
@@ -445,18 +475,49 @@ struct DashboardView: View {
         }
     }
 
+    private enum DeviceDashboardScope {
+        case local
+        case allMerged
+        case peer(PeerDevice)
+    }
+
+    private var currentDeviceScope: DeviceDashboardScope {
+        guard store.syncEnabled, !store.peers.isEmpty else { return .local }
+        switch store.deviceScope {
+        case Store.localScope:
+            return .local
+        case Store.allScope:
+            return .allMerged
+        default:
+            if let p = store.peers.first(where: { $0.deviceId == store.deviceScope }) { return .peer(p) }
+            return .allMerged
+        }
+    }
+
     func applyCachedScope(animated: Bool) {
         let update = {
             let fallback = DashboardData(daily: baseDaily, models: baseModels)
-            if let scoped = scopedUsage() {
-                let scopedDaily = allDeviceDaily(period: wrappedPeriod)
-                daily = scopedDaily
-                models = Self.dashboardData(from: scoped, period: wrappedPeriod, fallback: fallback).models
-                wrapped = allDeviceWrapped(from: scoped, period: wrappedPeriod, daily: scopedDaily)
-            } else {
+            switch currentDeviceScope {
+            case .local:
                 daily = baseDaily
                 models = baseModels
                 wrapped = baseWrapped
+            case .allMerged:
+                if let scoped = store.allDevicesUsage ?? store.localUsage {
+                    let scopedDaily = allDeviceDaily(period: wrappedPeriod)
+                    daily = scopedDaily
+                    models = Self.dashboardData(from: scoped, period: wrappedPeriod, fallback: fallback).models
+                    wrapped = allDeviceWrapped(from: scoped, period: wrappedPeriod, daily: scopedDaily)
+                } else {
+                    daily = baseDaily
+                    models = baseModels
+                    wrapped = baseWrapped
+                }
+            case .peer(let peer):
+                let scopedDaily = peerDaily(peer, period: wrappedPeriod)
+                daily = scopedDaily
+                models = Self.dashboardData(from: peer.usage, period: wrappedPeriod, fallback: fallback).models
+                wrapped = peerWrapped(peer, period: wrappedPeriod, daily: scopedDaily)
             }
             if !daily.isEmpty || !models.isEmpty || wrapped != nil {
                 loading = false
@@ -469,13 +530,41 @@ struct DashboardView: View {
         }
     }
 
-    private func scopedUsage() -> Usage? {
-        guard store.syncEnabled, store.showAllDevices, !store.peers.isEmpty else { return nil }
-        return store.allDevicesUsage ?? store.usage
-    }
-
     private func peerDashboards() -> [PeerDashboardSnapshot] {
         store.peers.compactMap(\.dashboard)
+    }
+
+    private func peerDaily(_ peer: PeerDevice, period: WrappedPeriod) -> [DailyCost] {
+        guard let snapshot = peer.dashboard else { return [] }
+        return snapshot.daily
+            .filter { Self.includes(dateString: $0.date, in: period) }
+            .sorted { $0.date < $1.date }
+    }
+
+    private func peerWrapped(_ peer: PeerDevice, period: WrappedPeriod, daily scopedDaily: [DailyCost]) -> WrappedData {
+        let snapshotWrapped = Self.rangeBoundsMatch(peer.rangeBounds, period: period)
+            ? peer.dashboard?.wrapped[period.rawValue] : nil
+        var data = Self.wrappedData(from: peer.usage, period: period, fallback: snapshotWrapped)
+
+        data.hours = snapshotWrapped?.hours ?? Array(repeating: 0, count: 24)
+        data.weekday = snapshotWrapped?.weekday ?? Array(repeating: 0, count: 7)
+        data.projects = snapshotWrapped?.projects ?? []
+        data.max_projs_day = snapshotWrapped?.max_projs_day ?? 0
+        data.night_share = Self.nightShare(from: data.hours)
+
+        let activeDays = scopedDaily.filter { $0.tokens > 0 || $0.total > 0 }.map(\.date).sorted()
+        data.active_days = activeDays.count
+        let streak = Self.streakInfo(activeDays)
+        data.streak_max = streak.max
+        data.streak_cur = streak.current
+        if let busiest = scopedDaily.max(by: { $0.tokens < $1.tokens }) {
+            data.busiest = WrappedBusiest(date: busiest.date, tokens: busiest.tokens)
+        }
+
+        let firstCandidates = ([snapshotWrapped?.first_day ?? ""] + activeDays).filter { !$0.isEmpty }
+        data.first_day = firstCandidates.min() ?? data.first_day
+        data.period = period.rawValue
+        return data
     }
 
     private func allDeviceDaily(period: WrappedPeriod) -> [DailyCost] {
@@ -714,11 +803,19 @@ struct DashboardView: View {
         }
 
         let codex = usage.codex.ranges.get(key)
-        let codexTokens = codex.in + codex.cached + codex.out + codex.reason
-        if codexTokens > 0 || codex.cost > 0 {
-            out.append(modelCost(name: "GPT-5.5 (Codex)", cost: codex.cost, tool: "codex",
-                                 input: codex.in + codex.cached, out: codex.out,
-                                 reason: codex.reason, tokens: codexTokens))
+        if codex.models.isEmpty {
+            let codexTokens = codex.in + codex.cached + codex.out + codex.reason
+            if codexTokens > 0 || codex.cost > 0 {
+                out.append(modelCost(name: "GPT-5.5 (Codex)", cost: codex.cost, tool: "codex",
+                                     input: codex.in + codex.cached, out: codex.out,
+                                     reason: codex.reason, tokens: codexTokens))
+            }
+        } else {
+            for model in codex.models where model.total > 0 || model.cost > 0 {
+                out.append(modelCost(name: model.name, cost: model.cost, tool: "codex",
+                                     input: model.in + model.cached, out: model.out,
+                                     reason: model.reason, tokens: model.total))
+            }
         }
 
         let gemini = usage.gemini.ranges.get(key)
@@ -823,6 +920,11 @@ struct DashboardView: View {
 
     static func tokenModelTotal(_ m: TokenModelStat) -> Int {
         m.in + m.out + m.cr + m.cw + m.reason
+    }
+
+    static func parseYMD(_ s: String) -> Date? {
+        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"
+        return f.date(from: s)
     }
 
     static func runScript(_ args: [String]) -> Data {

@@ -20,7 +20,6 @@ cp "$PROJ_DIR/usage.30s.py" "$APP/Contents/Resources/"
 [ -f "$PROJ_DIR/pricing.json" ] && cp "$PROJ_DIR/pricing.json" "$APP/Contents/Resources/"
 [ -f "$PROJ_DIR/pricing_overrides.json" ] && cp "$PROJ_DIR/pricing_overrides.json" "$APP/Contents/Resources/"
 [ -f "AppIcon.icns" ] && cp "AppIcon.icns" "$APP/Contents/Resources/"
-[ -d "Sources/Tokei/Resources/sit" ] && cp -R "Sources/Tokei/Resources/sit" "$APP/Contents/Resources/"
 [ -f "Sources/Tokei/Resources/github-mark.png" ] && cp "Sources/Tokei/Resources/github-mark.png" "$APP/Contents/Resources/"
 
 # Info.plist
@@ -32,8 +31,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundleName</key><string>Tokei</string>
     <key>CFBundleDisplayName</key><string>Tokei</string>
     <key>CFBundleIdentifier</key><string>com.tokei.app</string>
-    <key>CFBundleVersion</key><string>1.0.11</string>
-    <key>CFBundleShortVersionString</key><string>1.0.11</string>
+    <key>CFBundleVersion</key><string>1.0</string>
+    <key>CFBundleShortVersionString</key><string>1.0</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleExecutable</key><string>Tokei</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>
@@ -80,7 +79,7 @@ Tokei 安装说明
 
 3. 重新打开 Tokei.app 即可
 
-更多信息: https://tokei.lanshuagent.com
+更多信息: https://github.com/senflow/tokei
 INSTALL
 
     # 复制背景图到隐藏目录

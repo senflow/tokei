@@ -3,8 +3,8 @@
   <img src="https://img.shields.io/badge/swift-5.9+-F05138?style=flat-square&logo=swift&logoColor=white" alt="Swift 5.9+">
   <img src="https://img.shields.io/badge/python-3.8+-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.8+">
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="MIT License">
-  <a href="https://github.com/cclank/tokei/stargazers"><img src="https://img.shields.io/github/stars/cclank/tokei?style=flat-square&color=yellow" alt="Stars"></a>
-  <a href="https://github.com/cclank/tokei/releases"><img src="https://img.shields.io/github/v/release/cclank/tokei?style=flat-square&color=blue" alt="Release"></a>
+  <a href="https://github.com/senflow/tokei/stargazers"><img src="https://img.shields.io/github/stars/senflow/tokei?style=flat-square&color=yellow" alt="Stars"></a>
+  <a href="https://github.com/senflow/tokei/releases"><img src="https://img.shields.io/github/v/release/senflow/tokei?style=flat-square&color=blue" alt="Release"></a>
 </p>
 
 <h1 align="center">⏱ Tokei 知度</h1>
@@ -12,14 +12,38 @@
 <p align="center">
   <strong>macOS 菜单栏 AI 编程用量监控</strong><br>
   <sub>了然于心，掌控全局。</sub><br><br>
-  <a href="https://tokei.lanshuagent.com">🌐 官网</a> · <a href="https://github.com/cclank/tokei/releases/latest">⬇️ 下载</a> · <a href="#english">English</a>
+  <a href="https://github.com/senflow/tokei/releases/latest">⬇️ 下载</a> · <a href="#english">English</a>
 </p>
 
 ---
 
+> 本仓库 fork 自 [cclank/tokei](https://github.com/cclank/tokei)，在其 MIT 协议基础上继续开发。想了解具体改了什么，看下面的「本 Fork 相对上游的修改」。
+
 ## 什么是 Tokei？
 
-Tokei 是一款 **macOS 菜单栏应用**，实时追踪你在 **9 款 AI 编程工具** 上的用量、成本和性能——全部基于本地日志，零网络流量。
+Tokei 是一款 **macOS 菜单栏应用**，实时追踪你在 **9 款 AI 编程工具** 上的用量、成本和性能——默认全部基于本地日志，零网络流量。
+
+## 本 Fork 相对上游的修改
+
+本仓库基于上游 [cclank/tokei](https://github.com/cclank/tokei) v1.0.9 分叉，之后**有选择地**移植了上游 v1.0.10 ~ v1.0.12 的部分修复，并加了几个自己的功能。不是照单全收上游的每个改动,下面是完整清单:
+
+**从上游选择性合并的修复：**
+- Codex 跨 rollout（子代理 / 分叉任务）去重：修复子代理重放父任务历史导致 token / 成本被重复计入的问题
+- Codex 配额窗口按时长（`window_minutes`）识别，不再假设 primary=5h / secondary=周，兼容新版 Codex 返回结构
+- 多设备同步稳定性：同步脚本只 `add` 自己的设备文件、`fetch`+`rebase`+`push`，避免多设备并发推送互相冲突；`config.json` 改成合并写入，不再整体覆盖丢失其他字段
+- Qoder IDE 开关状态启动时主动落盘，修复首次启动不采集数据的问题
+
+**没有跟的：**
+- Codex 实时配额联网拉取——上游默认**开启**（用 Codex 登录态请求官方接口）。本 fork **合并了这个能力但默认关闭**，需要显式设置环境变量 `TOKEI_CODEX_LIVE_QUOTA=1` 才会联网，维持"默认零网络、不需要登录"的定位
+- 自动更新检查、GitHub 链接等均已指向本仓库，不会拉取上游发布版本或覆盖本地改动
+
+**本 fork 新增的功能：**
+- 多设备用量选择器：不再只是"本机 / 全部"二选一，可以从多设备列表里选中**任意一台具体设备**单独查看用量（设备名取自设置里的设备名 / deviceId）。设备数 ≤5 台时用分段控件快速切换，>5 台自动改为下拉列表，默认展示仍是"全部"
+- 开机自启动开关（基于 `ServiceManagement.SMAppService`）
+
+**移除的功能：**
+- 回顾页底部"这些花费 ≈ N 杯咖啡 / N 顿火锅 / 码了 N 字"的随机彩蛋提示
+- 防休眠、久坐提醒（连同对应的语音提示文件）
 
 ### 支持的工具
 
@@ -70,17 +94,14 @@ Tokei 是一款 **macOS 菜单栏应用**，实时追踪你在 **9 款 AI 编程
 - 回顾你一整年的 AI 编程旅程
 - 总用量、总成本、高峰日、工具偏好等统计
 
-### 久坐提醒
-- 感知空闲状态，智能提醒休息
-- 可自定义间隔时间
-
 ### 隐私优先
-- 仅读取本地日志文件，从不联网上报
-- 唯一的网络操作：手动执行 `--update-prices` 更新价格表
+- 默认仅读取本地日志文件，从不联网上报
+- 默认的网络操作只有：手动执行 `--update-prices` 更新价格表、检查应用更新
+- Codex 实时配额是可选功能，默认关闭，需要显式设置环境变量 `TOKEI_CODEX_LIVE_QUOTA=1` 才会用 Codex 登录态联网请求
 
 ## 快速开始
 
-1. 从 [GitHub Releases](https://github.com/cclank/tokei/releases/latest) 下载最新 DMG
+1. 从 [GitHub Releases](https://github.com/senflow/tokei/releases/latest) 下载最新 DMG
 2. 打开 DMG，将 Tokei.app 拖入 Applications 文件夹
 3. 首次打开如被 macOS 拦截，在终端运行：`sudo xattr -rd com.apple.quarantine /Applications/Tokei.app`
 4. 打开 Tokei 即可
@@ -89,7 +110,7 @@ Tokei 是一款 **macOS 菜单栏应用**，实时追踪你在 **9 款 AI 编程
 <summary>从源码构建</summary>
 
 ```bash
-git clone https://github.com/cclank/tokei.git
+git clone https://github.com/senflow/tokei.git
 cd tokei/Tokei
 bash package.sh
 open Tokei.app
@@ -105,12 +126,31 @@ Tokei 支持通过私有 Git 仓库在多台机器间同步用量数据。
 **远程 Linux 服务器：**
 
 ```bash
+mkdir -p ~/.tokei
 git clone <你的私有仓库> ~/.tokei/sync
-curl -fsSL https://dl.lanshuagent.com/tokei/usage.30s.py -o ~/.tokei/usage.30s.py
-echo '{"sync_dir":"~/.tokei/sync","device_id":"'$(hostname -s)'"}' > ~/.tokei/config.json
+curl -fsSL https://raw.githubusercontent.com/senflow/tokei/main/usage.30s.py -o ~/.tokei/usage.30s.py
+cat > ~/.tokei/config.json <<JSON
+{"sync_dir":"~/.tokei/sync","device_id":"$(hostname -s)","auto_sync":true,"sync_interval":5}
+JSON
+cat > ~/.tokei/tokei-sync.sh <<'SH'
+#!/bin/sh
+set -e
+cd "$HOME/.tokei/sync"
+python3 "$HOME/.tokei/usage.30s.py" --json >/dev/null
+git fetch -q origin main
+device_file=$(find . -maxdepth 1 -type f -iname "$(hostname -s).json" -print -quit)
+[ -n "$device_file" ] || device_file="./$(hostname -s).json"
+git add -- "$device_file"
+git diff --cached --quiet || git commit -qm "sync $(hostname -s)"
+git rebase -q origin/main
+git push -q origin HEAD:main
+SH
+chmod +x ~/.tokei/tokei-sync.sh
 # 每 5 分钟自动采集并同步
-(crontab -l 2>/dev/null; echo '*/5 * * * * cd ~/.tokei/sync && python3 ~/.tokei/usage.30s.py --json >/dev/null && git pull -q && git add -A && git diff --cached --quiet || git commit -qm sync && git push -q') | crontab -
+(crontab -l 2>/dev/null | grep -v 'tokei-sync.sh'; echo '*/5 * * * * ~/.tokei/tokei-sync.sh') | crontab -
 ```
+
+面板设置里的"远程采集"引导会自动生成同样的脚本（点击复制即可），跟应用内部逻辑保持一致。
 
 ## 数据来源
 
@@ -132,36 +172,24 @@ echo '{"sync_dir":"~/.tokei/sync","device_id":"'$(hostname -s)'"}' > ~/.tokei/co
 
 | 功能 | Tokei | [CodexBar](https://github.com/steipete/CodexBar) |
 |------|:-----:|:---------:|
-| 支持工具 | 9 | 40+ |
+| 支持工具 | 9（专注 AI 编程 CLI） | 59+（覆盖更广，含订阅/API 类服务） |
 | Token 级用量分析 | ✅ | — |
-| 成本估算（317 模型） | ✅ | 部分 |
-| 数据面板（图表 + 热力图） | ✅ | — |
+| 成本估算（317 模型） | ✅ | 部分供应商有内嵌图表 |
+| 数据面板（图表 + 热力图） | ✅ | 部分供应商有 |
 | 多时间维度 | 6 个 | — |
 | 项目级追踪 | ✅ | — |
 | 多设备同步 | ✅ | — |
 | 年度回顾 | ✅ | — |
-| 防休眠 / 久坐提醒 | ✅ | — |
-| 需要联网 | 否 | 是 |
-| 需要登录 | 否 | 是 |
-| 数据来源 | 本地日志 | 远程 API |
+| 需要联网 | 默认否（Codex 实时配额可选开启） | 是 |
+| 需要登录 | 默认否 | 是（多数供应商） |
+| 数据来源 | 本地日志 | 远程 API / 浏览器 Cookie |
 
 > CodexBar 在提供商覆盖和配额可见性上表现出色。Tokei 更深入——Token 级分析、成本趋势、项目维度拆分、跨设备同步——全部无需登录。
 
 ## 更新日志
 
-### v1.0.12
-- feat: 开机自启动（设置页「登录时启动」开关）
-- fix: Codex token 快照去重，避免重复累计
-- fix: 同步配置只更新同步字段，保留 qoder_ide_enabled 等其他配置
-- fix: 启动时落盘 Qoder IDE 开关状态
-
-### v1.0.11
-- fix: Codex 跨 rollout 去重，避免子代理和分叉任务重复累计父任务 Token
-
-### v1.0.10
-- fix: Codex 实时配额抓取（plan / 周配额 / 重置时间）
-- fix: Codex 按时长检测配额窗口，跳过重复 token 快照
-- fix: 多设备同步稳定性
+### Fork 修改（基于上游 v1.0.9）
+详见上面「本 Fork 相对上游的修改」。
 
 ### v1.0.9
 - fix: 多设备同步按日期边界对齐，修正跨设备采集时差导致的 range 串台
@@ -222,8 +250,8 @@ echo '{"sync_dir":"~/.tokei/sync","device_id":"'$(hostname -s)'"}' > ~/.tokei/co
 ## Star History
 
 <p align="center">
-  <a href="https://star-history.com/#cclank/tokei&Date">
-    <img src="https://api.star-history.com/svg?repos=cclank/tokei&type=Date" width="600" alt="Star History Chart">
+  <a href="https://star-history.com/#senflow/tokei&Date">
+    <img src="https://api.star-history.com/svg?repos=senflow/tokei&type=Date" width="600" alt="Star History Chart">
   </a>
 </p>
 
@@ -233,14 +261,14 @@ echo '{"sync_dir":"~/.tokei/sync","device_id":"'$(hostname -s)'"}' > ~/.tokei/co
 
 ## English
 
-Tokei is a **macOS menu bar app** that tracks usage, cost, and performance across **9 AI coding tools** in real-time — all from local log files, with zero network traffic.
+Tokei is a **macOS menu bar app** that tracks usage, cost, and performance across **9 AI coding tools** in real-time — by default entirely from local log files, with zero network traffic.
 
-**Features:** Real-time monitoring (30s refresh) · Cost estimation (317 models, OpenRouter pricing) · Dashboard (daily chart, weekly heatmap) · Time ranges (today/week/month/year) · Project-level tracking · Multi-device sync (Git-based, Mac + Linux) · Annual Wrapped · Keep awake · Sit reminder · Privacy-first (local logs only) · [Compare with CodexBar](https://tokei.lanshuagent.com#compare)
+This repository is a **fork of [cclank/tokei](https://github.com/cclank/tokei)**. See "本 Fork 相对上游的修改" above (in Chinese) for the full list of what was selectively merged from upstream v1.0.10–v1.0.12, what was intentionally skipped (Codex live-quota fetch defaults to **off** here, opt-in via `TOKEI_CODEX_LIVE_QUOTA=1`), and what's new in this fork (per-device usage picker for multi-device sync, launch-at-login toggle) or removed (the random cost-comparison easter egg).
+
+**Features:** Real-time monitoring (30s refresh) · Cost estimation (317 models, OpenRouter pricing) · Dashboard (daily chart, weekly heatmap) · Time ranges (today/week/month/year) · Project-level tracking · Multi-device sync (Git-based, Mac + Linux, with a per-device usage picker) · Annual Wrapped · Privacy-first by default (local logs only; Codex live-quota network fetch is opt-in) · Launch at login
 
 **Supported tools:** Claude Code, Codex CLI, Gemini CLI, Grok CLI, Hermes, OpenClaw, Pi Coding Agent CLI, OpenCode, Qoder
 
-For full documentation, visit [tokei.lanshuagent.com](https://tokei.lanshuagent.com).
-
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE). This fork continues to be distributed under the original project's MIT license.

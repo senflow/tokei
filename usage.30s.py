@@ -5,8 +5,10 @@
 # <bitbar.desc>本地 AI coding tools token / 缓存命中 / 花费 / 额度</bitbar.desc>
 # <swiftbar.runInBash>false</swiftbar.runInBash>
 #
-# 数据主要读自本地会话日志,不改动任何 CLI；Codex 额度会短缓存查询官方 live usage。
-# 仅 --update-prices 显式联网更新价格表:
+# 数据全部读自本地会话日志,运行/刷新默认不联网、不改动任何 CLI:
+#   - 仅 --update-prices 显式联网更新价格表
+#   - Codex 实时配额(更准的 plan/credits)默认关闭,需设置环境变量
+#     TOKEI_CODEX_LIVE_QUOTA=1 才会用本机 Codex 登录态请求官方接口,失败自动回退本地日志解析
 #   Claude Code: ~/.claude/projects/<proj>/<session>.jsonl  (assistant 行 message.usage,增量)
 #   Codex:       ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl (token_count 事件,含额度)
 #   Pi:          ~/.pi/agent/sessions/**/*.jsonl (assistant 行 message.usage)
@@ -183,8 +185,15 @@ def nice_model(m: str) -> str:
     s = m.lower()
     for key, disp in (("opus", "Opus"), ("sonnet", "Sonnet"), ("haiku", "Haiku")):
         if key in s:
-            mt = re.search(r"(\d+)-(\d+)", s)
-            return f"{disp} {mt.group(1)}.{mt.group(2)}" if mt else disp
+            mt = re.search(rf"{key}-(\d+)(?:-(\d+))?", s)
+            if not mt:
+                return disp
+            major, minor = mt.group(1), mt.group(2)
+            return f"{disp} {major}.{minor}" if minor else f"{disp} {major}"
+    if re.match(r"(gpt|chatgpt)", s):
+        rest = re.sub(r"^(gpt|chatgpt)-?", "", m.split("/")[-1], flags=re.IGNORECASE)
+        rest = re.sub(r"[-:](free|preview|latest)$", "", rest)
+        return f"GPT-{rest}" if rest else "GPT"
     name = re.sub(r"[-:](free|preview|latest)$", "", m.split("/")[-1]).replace("-", " ")
     return " ".join(w[:1].upper() + w[1:] if w[:1].isalpha() else w
                     for w in name.split())
@@ -311,7 +320,7 @@ def _empty_claude():
 
 def _empty_codex():
     ranges = {k: {"in": 0, "cached": 0, "out": 0, "reason": 0,
-                  "cost": 0.0, "sessions": set()} for k in RANGE_KEYS}
+                  "cost": 0.0, "models": {}, "sessions": set()} for k in RANGE_KEYS}
     return {"ranges": ranges, "limits": None, "plan": None}
 
 
@@ -380,6 +389,15 @@ def _add_model_usage(models, model, inp=0, out=0, cr=0, cw=0, reason=0, cost=0.0
     mm = models.setdefault(model, {"in": 0, "out": 0, "cr": 0, "cw": 0, "reason": 0, "cost": 0.0})
     mm["in"] += int(inp or 0); mm["out"] += int(out or 0)
     mm["cr"] += int(cr or 0); mm["cw"] += int(cw or 0); mm["reason"] += int(reason or 0)
+    mm["cost"] += float(cost or 0)
+
+
+def _add_codex_model_usage(models, model, inp=0, cached=0, out=0, reason=0, cost=0.0):
+    if not model:
+        return
+    mm = models.setdefault(model, {"in": 0, "cached": 0, "out": 0, "reason": 0, "cost": 0.0})
+    mm["in"] += int(inp or 0); mm["cached"] += int(cached or 0)
+    mm["out"] += int(out or 0); mm["reason"] += int(reason or 0)
     mm["cost"] += float(cost or 0)
 
 
@@ -635,7 +653,10 @@ def _cached_codex_live_limits(max_age):
 
 
 def fetch_codex_live_limits():
-    if os.environ.get("TOKEI_CODEX_LIVE_QUOTA") == "0":
+    """Codex 实时配额:默认关闭,只有显式设置 TOKEI_CODEX_LIVE_QUOTA=1 才会用本机
+    Codex 登录态(~/.codex/auth.json 的 access_token)请求官方接口获取更准的 plan/credits。
+    不设置该环境变量时,函数直接返回 None,不发起任何网络请求。"""
+    if os.environ.get("TOKEI_CODEX_LIVE_QUOTA") != "1":
         return None
     cached = _cached_codex_live_limits(_CODEX_QUOTA_TTL)
     if cached:
@@ -675,17 +696,19 @@ def fetch_codex_live_limits():
 
 
 def _codex_deduped_days(file_cache):
-    """Return per-file daily usage after removing replayed snapshots globally."""
+    """Codex 子代理/分叉 rollout 会重放父任务历史事件,导致同一份 token 快照在多个
+    文件里重复出现。这里按快照键(累计值+增量值)在所有文件范围内全局去重,
+    只保留每个唯一快照最早出现的一次,避免重复计入用量与成本。"""
     owners = {}
     for file_path, entry in file_cache.items():
         for event_index, event in enumerate(entry.get("events", [])):
-            if not isinstance(event, list) or len(event) != 11:
+            if not isinstance(event, list) or len(event) != 12:
                 continue
             total_values = event[2:6]
             if all(value is not None for value in total_values):
                 key = tuple(event[2:10])
             else:
-                # A last_token_usage without a cumulative total cannot be matched safely.
+                # 没有累计值的 last_token_usage 无法安全匹配,当作永远唯一。
                 key = ("unique", file_path, event_index)
             rank = (event[0], file_path, event_index)
             current = owners.get(key)
@@ -695,71 +718,23 @@ def _codex_deduped_days(file_cache):
     days_by_file = {}
     for _, file_path, event in owners.values():
         dk = event[1]
-        li, lc, lo, lr, cost = event[6:11]
+        li, lc, lo, lr, cost, model = event[6:12]
         days = days_by_file.setdefault(file_path, {})
         day = days.setdefault(dk, {"in": 0, "cached": 0, "out": 0,
-                                   "reason": 0, "cost": 0.0})
+                                   "reason": 0, "cost": 0.0, "models": {}})
         day["in"] += li
         day["cached"] += lc
         day["out"] += lo
         day["reason"] += lr
         day["cost"] += cost
+        _add_codex_model_usage(day["models"], model, li, lc, lo, lr, cost)
     return days_by_file
-
-
-_CODEX_TOKEN_EVENT_HEADER = re.compile(
-    rb'^\s*\{\s*"timestamp"\s*:\s*"[^"]+"\s*,\s*'
-    rb'"type"\s*:\s*"event_msg"\s*,\s*'
-    rb'"payload"\s*:\s*\{\s*"type"\s*:\s*"token_count"'
-)
-
-
-def _iter_codex_token_lines(path, chunk_size=64 * 1024, header_limit=4 * 1024):
-    """Yield token_count JSONL records without buffering unrelated large records."""
-    prefix = bytearray()
-    candidate = None
-
-    with open(path, "rb", buffering=0) as fh:
-        while True:
-            chunk = fh.read(chunk_size)
-            if not chunk:
-                break
-
-            start = 0
-            while start < len(chunk):
-                newline = chunk.find(b"\n", start)
-                end = len(chunk) if newline < 0 else newline
-                piece = memoryview(chunk)[start:end]
-
-                if candidate is not None:
-                    candidate.extend(piece)
-                elif len(prefix) < header_limit:
-                    take = min(len(piece), header_limit - len(prefix))
-                    prefix.extend(piece[:take])
-                    if _CODEX_TOKEN_EVENT_HEADER.search(prefix):
-                        candidate = prefix
-                        prefix = bytearray()
-                        if take < len(piece):
-                            candidate.extend(piece[take:])
-
-                if newline < 0:
-                    break
-
-                if candidate is not None:
-                    yield bytes(candidate)
-                prefix = bytearray()
-                candidate = None
-                start = newline + 1
-
-    if candidate is not None:
-        yield bytes(candidate)
 
 
 def scan_codex(bounds, cache):
     fc = cache.setdefault("codex", {})
-    B = {k: {"in": 0, "cached": 0, "out": 0, "reason": 0, "cost": 0.0, "sessions": set()}
+    B = {k: {"in": 0, "cached": 0, "out": 0, "reason": 0, "cost": 0.0, "models": {}, "sessions": set()}
          for k in RANGE_KEYS}
-    cx_base = _raw_price("openai/gpt-5.5")
     if not os.path.isdir(CODEX_DIR):
         return {"ranges": B, "cur_total": None, "limits": None, "plan": None}
 
@@ -791,54 +766,68 @@ def scan_codex(bounds, cache):
             file_limits = None; file_limits_ts = None; file_plan = None
             file_g_limits = None; file_g_ts = None; file_g_plan = None
             file_last_total = None
-            prev_total_key = None
+            cur_model = None
+            price_cache = {}
             try:
-                for line in _iter_codex_token_lines(f):
-                    try:
-                        o = json.loads(line.decode("utf-8", errors="ignore"))
-                    except Exception:
-                        continue
-                    info = (o.get("payload") or {}).get("info") or {}
-                    last = info.get("last_token_usage") or {}
-                    total = info.get("total_token_usage") or {}
-                    total_key = None
-                    duplicate_total = False
-                    if total:
-                        total_key = (total.get("input_tokens", 0) or 0,
-                                     total.get("cached_input_tokens", 0) or 0,
-                                     total.get("output_tokens", 0) or 0,
-                                     total.get("reasoning_output_tokens", 0) or 0)
-                        duplicate_total = total_key == prev_total_key
-                        prev_total_key = total_key
-                        file_last_total = total
-                    ts = parse_ts(o.get("timestamp", ""))
-                    rl = (o.get("payload") or {}).get("rate_limits")
-                    if ts and rl:
-                        ts_iso = ts.isoformat()
-                        if file_g_ts is None or ts_iso > file_g_ts:
-                            file_g_ts = ts_iso
-                            file_g_limits = rl
-                            file_g_plan = rl.get("plan_type")
-                        if rl.get("limit_id") == "codex" and (file_limits_ts is None or ts_iso > file_limits_ts):
-                            file_limits_ts = ts_iso
-                            file_limits = rl
-                            file_plan = rl.get("plan_type")
-                    # Codex may emit the same cumulative snapshot twice; in that case
-                    # last_token_usage is repeated too, so counting it again overstates usage.
-                    if ts and last and not duplicate_total:
-                        dk = ts.astimezone().date().isoformat()
-                        li = last.get("input_tokens", 0) or 0
-                        lc = last.get("cached_input_tokens", 0) or 0
-                        lo = last.get("output_tokens", 0) or 0
-                        lr = last.get("reasoning_output_tokens", 0) or 0
-                        hi = li > 272_000
-                        p_in = cx_base["in"] * (2 if hi else 1)
-                        p_out = cx_base["out"] * (1.5 if hi else 1)
-                        p_cr = cx_base["cache_read"] * (2 if hi else 1)
-                        cost = (li - lc) / 1e6 * p_in + lc / 1e6 * p_cr + lo / 1e6 * p_out
-                        totals = total_key if total_key is not None else (None, None, None, None)
-                        # timestamp, local day, cumulative usage, incremental usage, cost
-                        events.append([ts.isoformat(), dk, *totals, li, lc, lo, lr, cost])
+                with open(f, "r", encoding="utf-8", errors="ignore") as fh:
+                    for line in fh:
+                        if '"turn_context"' in line or '"session_meta"' in line:
+                            try:
+                                o = json.loads(line)
+                            except Exception:
+                                continue
+                            m = (o.get("payload") or {}).get("model")
+                            if m:
+                                cur_model = m
+                            continue
+                        if '"token_count"' not in line:
+                            continue
+                        try:
+                            o = json.loads(line)
+                        except Exception:
+                            continue
+                        info = (o.get("payload") or {}).get("info") or {}
+                        last = info.get("last_token_usage") or {}
+                        total = info.get("total_token_usage") or {}
+                        if total:
+                            file_last_total = total
+                        ts = parse_ts(o.get("timestamp", ""))
+                        rl = (o.get("payload") or {}).get("rate_limits")
+                        if ts and rl:
+                            ts_iso = ts.isoformat()
+                            if file_g_ts is None or ts_iso > file_g_ts:
+                                file_g_ts = ts_iso
+                                file_g_limits = rl
+                                file_g_plan = rl.get("plan_type")
+                            if rl.get("limit_id") == "codex" and (file_limits_ts is None or ts_iso > file_limits_ts):
+                                file_limits_ts = ts_iso
+                                file_limits = rl
+                                file_plan = rl.get("plan_type")
+                        if ts and last:
+                            dk = ts.astimezone().date().isoformat()
+                            li = last.get("input_tokens", 0) or 0
+                            lc = last.get("cached_input_tokens", 0) or 0
+                            lo = last.get("output_tokens", 0) or 0
+                            lr = last.get("reasoning_output_tokens", 0) or 0
+                            model = cur_model or "gpt-5.5"
+                            cp = price_cache.get(model)
+                            if cp is None:
+                                cp = _raw_price(model)
+                                price_cache[model] = cp
+                            hi = li > 272_000
+                            p_in = cp["in"] * (2 if hi else 1)
+                            p_out = cp["out"] * (1.5 if hi else 1)
+                            p_cr = cp["cache_read"] * (2 if hi else 1)
+                            cost = (li - lc) / 1e6 * p_in + lc / 1e6 * p_cr + lo / 1e6 * p_out
+                            if total:
+                                tot4 = (total.get("input_tokens", 0) or 0,
+                                        total.get("cached_input_tokens", 0) or 0,
+                                        total.get("output_tokens", 0) or 0,
+                                        total.get("reasoning_output_tokens", 0) or 0)
+                            else:
+                                tot4 = (None, None, None, None)
+                            # timestamp, local day, 累计快照(4), 增量快照(4), cost, model
+                            events.append([ts.isoformat(), dk, *tot4, li, lc, lo, lr, cost, model])
             except OSError:
                 continue
             fc[f] = {"sig": sig, "events": events, "days": {},
@@ -851,8 +840,7 @@ def scan_codex(bounds, cache):
         fc.pop(p, None)
         cache["_dirty"] = True
 
-    # Forked and subagent rollouts replay parent history. Select the earliest
-    # occurrence of each cumulative+increment snapshot across all files.
+    # Codex 子代理/分叉 rollout 会重放父任务历史,这里跨文件全局去重后重建每个文件的 days。
     days_by_file = _codex_deduped_days(fc)
     for f, entry in fc.items():
         days = days_by_file.get(f, {})
@@ -878,6 +866,9 @@ def scan_codex(bounds, cache):
                 b["sessions"].add(f)
                 b["in"] += day["in"]; b["cached"] += day["cached"]
                 b["out"] += day["out"]; b["reason"] += day["reason"]; b["cost"] += day["cost"]
+                for mname, mv in day.get("models", {}).items():
+                    _add_codex_model_usage(b["models"], mname, mv["in"], mv["cached"],
+                                           mv["out"], mv["reason"], mv["cost"])
 
     # Find latest limits across all cached files
     latest_limits = None; latest_ts = None; plan_type = None
@@ -897,6 +888,7 @@ def scan_codex(bounds, cache):
         latest_limits = g_limits
         plan_type = (g_limits or {}).get("plan_type")
 
+    # 默认关闭,仅 TOKEI_CODEX_LIVE_QUOTA=1 时才会联网校准配额,否则直接返回 None。
     live = fetch_codex_live_limits()
     if live:
         latest_limits, live_plan = live
@@ -917,15 +909,14 @@ def scan_codex(bounds, cache):
 
 
 def _codex_quota_values(limits, now_epoch=None):
-    """Map Codex rate-limit slots by duration; primary/secondary roles can change."""
+    """按窗口时长(而不是固定的 primary=5h / secondary=周)映射配额,兼容 Codex 新旧返回结构:
+    旧结构通常是 primary=5h、secondary=周;新结构可能只有 primary=周、没有 secondary。"""
     values = {"p5": None, "pw": None, "r5": None, "rw": None}
     for slot_name in ("primary", "secondary"):
         slot = (limits or {}).get(slot_name) or {}
         if not slot:
             continue
         minutes = slot.get("window_minutes")
-        # Older logs use primary=5h and secondary=7d. Newer plans may expose
-        # the 7d window as primary with no secondary, so duration is canonical.
         is_week = minutes == 7 * 24 * 60 or (minutes is None and slot_name == "secondary")
         pct_key, reset_key = ("pw", "rw") if is_week else ("p5", "r5")
         values[pct_key] = slot.get("used_percent")
@@ -1908,8 +1899,14 @@ def compute():
 
     def codex_range(b):
         hit = (b["cached"] / b["in"] * 100) if b["in"] else 0.0
+        models = []
+        for n, v in sorted(b["models"].items(), key=lambda kv: -kv[1]["cost"]):
+            p = _raw_price(n)
+            models.append({"name": nice_model(n), "in": v["in"] - v["cached"], "cached": v["cached"],
+                           "out": v["out"], "reason": v["reason"], "cost": v["cost"],
+                           "pin": p["in"], "pout": p["out"]})
         return {"hit": hit, "in": b["in"] - b["cached"], "cached": b["cached"],
-                "out": b["out"], "reason": b["reason"], "cost": b["cost"],
+                "out": b["out"], "reason": b["reason"], "cost": b["cost"], "models": models,
                 "sessions": len(b["sessions"])}
 
     def gemini_range(b):
@@ -2607,7 +2604,6 @@ def build_wrapped(period="all", refresh=True):
     proj_tok = {}
     day_projs = {}
     model_tok = {}
-    all_day_hours = set()
     total_tokens = 0
     total_cost = 0.0
 
@@ -2620,10 +2616,6 @@ def build_wrapped(period="all", refresh=True):
         if h and len(h) == 24:
             for i in range(24):
                 hours[i] += h[i]
-        for dh_item in entry.get("dh", []):
-            dk_part = dh_item.rsplit(":", 1)[0] if ":" in dh_item else ""
-            if not cutoff or dk_part >= cutoff:
-                all_day_hours.add(dh_item)
         proj_path = entry.get("proj") or ""
         proj = os.path.basename(proj_path.rstrip("/")) or "?"
         for dk, day in entry.get("days", {}).items():
@@ -2771,90 +2763,6 @@ def build_wrapped(period="all", refresh=True):
     night = sum(hours[0:6])
     night_share = round(night / hours_total * 100, 1) if hours_total else 0.0
 
-    ach = []
-    def add(icon, title, desc, tint):
-        ach.append({"icon": icon, "title": title, "desc": desc, "tint": tint})
-
-    # Token 里程碑(金,取最高档)
-    if total_tokens >= 1_000_000_000_000:
-        add("crown.fill", "万亿先生", f"{total_tokens/1e12:.2f} 万亿 token", "gold")
-    elif total_tokens >= 100_000_000_000:
-        add("hexagon.fill", "千亿先生", f"{total_tokens/1e8:.0f} 亿 token", "gold")
-    elif total_tokens >= 10_000_000_000:
-        add("diamond.fill", "百亿先生", f"{total_tokens/1e8:.0f} 亿 token", "gold")
-    elif total_tokens >= 1_000_000_000:
-        add("diamond", "十亿先生", f"{total_tokens/1e8:.1f} 亿 token", "gold")
-
-    # 成本里程碑(绿,取最高档)
-    if total_cost >= 100000:
-        add("dollarsign.circle.fill", "十万刀", f"≈${int(total_cost):,}", "green")
-    elif total_cost >= 10000:
-        add("banknote.fill", "破万刀", f"≈${int(total_cost):,}", "green")
-    elif total_cost >= 1000:
-        add("banknote", "破千刀", f"≈${int(total_cost):,}", "green")
-
-    # 连续打卡(火橙,取最高档)
-    if streak_max >= 100:
-        add("flame.fill", "百日筑基", f"连续 {streak_max} 天", "coral")
-    elif streak_max >= 30:
-        add("flame.fill", "铁人", f"连续 {streak_max} 天", "coral")
-    elif streak_max >= 7:
-        add("flame.fill", "坚持", f"连续 {streak_max} 天", "coral")
-
-    # 单日爆发(火橙)
-    if busiest_tok >= 1_000_000_000:
-        add("bolt.fill", "爆肝日", f"单日 {busiest_tok/1e8:.0f} 亿 token", "coral")
-
-    # 项目维度(青蓝)
-    if max_projs_day >= 5:
-        add("square.grid.3x3.fill", "多线作战", f"单日 {max_projs_day} 个项目", "blue")
-    elif max_projs_day >= 3:
-        add("square.grid.2x2.fill", "多面手", f"单日 {max_projs_day} 个项目", "blue")
-    claude_tokens = sum(v[0] for v in proj_tok.values())
-    top_share = (max(v[0] for v in proj_tok.values()) / claude_tokens * 100) if (proj_tok and claude_tokens) else 0
-    if top_share >= 50:
-        add("scope", "专一", f"主项目占 {top_share:.0f}%", "blue")
-    if len(proj_tok) >= 10:
-        add("rectangle.3.group.fill", "广撒网", f"{len(proj_tok)} 个项目", "blue")
-
-    # 作息彩蛋(紫)
-    active_hours = sum(1 for h in hours if h > 0)
-    if active_hours >= 24:
-        add("clock.badge.checkmark.fill", "永动机", "24h 每个时段都有活跃", "purple")
-    # Loop 成就: 连续 N 天每天 24h 全时段有 agent 活跃
-    day_hour_map = {}
-    for item in all_day_hours:
-        dk, h = item.rsplit(":", 1)
-        day_hour_map.setdefault(dk, set()).add(int(h))
-    full_days = sorted(dk for dk, hs in day_hour_map.items() if len(hs) >= 24)
-    loop_streak = 0
-    if full_days:
-        cur = 1
-        for i in range(1, len(full_days)):
-            if (date.fromisoformat(full_days[i]) - date.fromisoformat(full_days[i - 1])).days == 1:
-                cur += 1
-            else:
-                loop_streak = max(loop_streak, cur)
-                cur = 1
-        loop_streak = max(loop_streak, cur)
-    if loop_streak >= 30:
-        add("repeat.circle.fill", "Loop滴神", f"连续 {loop_streak} 天 24/7", "purple")
-    elif loop_streak >= 3:
-        add("repeat.circle", "Loop Engineering !!", f"连续 {loop_streak} 天 24/7", "purple")
-    if night_share >= 5:
-        add("moon.stars.fill", "夜猫子", f"{night_share:.0f}% 在凌晨", "purple")
-    morning_share = (sum(hours[5:9]) / hours_total * 100) if hours_total else 0
-    if morning_share >= 12:
-        add("sunrise.fill", "早起鸟", f"{morning_share:.0f}% 在清晨", "purple")
-    weekday_total = sum(weekday)
-    weekend_share = ((weekday[5] + weekday[6]) / weekday_total * 100) if weekday_total else 0
-    if weekend_share >= 30:
-        add("beach.umbrella.fill", "周末战士", f"周末占 {weekend_share:.0f}%", "purple")
-
-    # 资历(玫红)
-    if len(active) >= 100:
-        add("calendar", "元老", f"{len(active)} 天活跃", "pink")
-
     return {
         "total_tokens": total_tokens,
         "total_cost": round(total_cost, 2),
@@ -2869,13 +2777,12 @@ def build_wrapped(period="all", refresh=True):
         "max_projs_day": max_projs_day,
         "night_share": night_share,
         "first_day": cutoff if cutoff else (active[0] if active else ""),
-        "achievements": ach,
         "period": period,
     }
 
 
 def wrapped():
-    """Tokei 回顾:作息 / 项目 / 连续 / 成就。汇总全部工具,不联网。"""
+    """Tokei 回顾:作息 / 项目 / 连续。汇总全部工具,不联网。"""
     print(json.dumps(build_wrapped(_arg_period()), ensure_ascii=False))
 
 

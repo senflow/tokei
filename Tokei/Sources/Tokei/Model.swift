@@ -77,6 +77,19 @@ struct ClaudeStat: Codable {
     var q7_reset: Int?
 }
 
+struct CodexModelStat: Codable, Identifiable {
+    var name: String
+    var `in`: Int
+    var cached: Int
+    var out: Int
+    var reason: Int
+    var cost: Double
+    var pin: Double      // 输入单价 $/M
+    var pout: Double     // 输出单价 $/M
+    var id: String { name }
+    var total: Int { `in` + cached + out + reason }
+}
+
 struct CodexRange: Codable {
     var hit: Double
     var `in`: Int
@@ -84,6 +97,7 @@ struct CodexRange: Codable {
     var out: Int
     var reason: Int
     var cost: Double
+    var models: [CodexModelStat] = []
     var sessions: Int = 0
 }
 
