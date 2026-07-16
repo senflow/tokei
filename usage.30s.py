@@ -28,6 +28,7 @@ GEMINI_DIR = os.path.join(HOME, ".gemini", "tmp")
 GROK_DIR = os.path.join(HOME, ".grok", "sessions")
 QODER_IDE_DB = os.path.join(HOME, "Library", "Application Support", "Qoder",
                             "SharedClientCache", "cache", "db", "local.db")
+QODER_CLI_SESSIONS_DIR = os.path.join(HOME, ".qoder", "logs", "sessions")
 HERMES_DB = os.path.join(HOME, ".hermes", "state.db")
 OPENCODE_DIR = os.path.join(HOME, ".local", "share", "opencode", "storage", "message")
 OPENCLAW_DB = os.path.join(HOME, ".openclaw", "tasks", "runs.sqlite")
@@ -409,6 +410,12 @@ def _empty_qoder():
     return {"ranges": ranges, "model": None}
 
 
+def _empty_qoder_cli():
+    ranges = {k: {"sessions": set(), "calls": 0, "sub_agents": 0,
+                  "duration": 0, "turns": 0} for k in RANGE_KEYS}
+    return {"ranges": ranges, "model": None}
+
+
 def _empty_hermes():
     ranges = {k: {"in": 0, "out": 0, "cr": 0, "cw": 0, "reason": 0,
                   "cost": 0.0, "sessions": 0, "models": {}} for k in RANGE_KEYS}
@@ -487,7 +494,7 @@ def _format_token_models(models):
     result = []
     for n, v in sorted(models.items(), key=lambda kv: -kv[1].get("cost", 0)):
         p = _raw_price(n)
-        result.append({"name": nice_model(n), "in": v.get("in", 0), "out": v.get("out", 0),
+        result.append({"id": n, "name": nice_model(n), "in": v.get("in", 0), "out": v.get("out", 0),
                         "cr": v.get("cr", 0), "cw": v.get("cw", 0), "reason": v.get("reason", 0),
                         "cost": v.get("cost", 0), "pin": p["in"], "pout": p["out"]})
     return result
@@ -1503,6 +1510,103 @@ def scan_qoder_ide(bounds, cache):
     return {"ranges": B, "model": entry.get("model")}
 
 
+# ---------- Qoder CLI ----------
+# qodercli(独立于 QoderWork / Qoder IDE 的命令行工具):无 SQLite,是纯 jsonl 事件日志。
+# 会话文件: ~/.qoder/logs/sessions/<project>/<session_id>/segments/<run_id>.jsonl
+# 每行一个事件 {"ts","type","data":{...}}；实测 model.response.completed / turn.finished
+# 里的 input_tokens/output_tokens 恒为 0（CLI 本地不落盘真实 token 数），因此这里只统计
+# 调用次数、会话数、子 agent 次数、耗时、轮次，不出 token/成本口径。
+def scan_qoder_cli(bounds, cache):
+    fc = cache.setdefault("qoder_cli", {})
+    if not os.path.isdir(QODER_CLI_SESSIONS_DIR):
+        return _empty_qoder_cli()
+
+    stale = set(fc.keys())
+
+    for f in glob.glob(os.path.join(QODER_CLI_SESSIONS_DIR, "**", "*.jsonl"), recursive=True):
+        stale.discard(f)
+        try:
+            st = os.stat(f)
+        except OSError:
+            continue
+        sig = f"{st.st_mtime}:{st.st_size}"
+        entry = fc.get(f)
+        if entry and entry.get("sig") == sig:
+            continue
+
+        # segments/<run>.jsonl 的上两级目录名就是 session_id
+        session_id = os.path.basename(os.path.dirname(os.path.dirname(f)))
+        days = {}
+        model, model_ts = None, ""
+        try:
+            with open(f, "r", encoding="utf-8", errors="ignore") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except Exception:
+                        continue
+                    ts = obj.get("ts")
+                    dt = parse_ts(ts) if ts else None
+                    if not dt:
+                        continue
+                    dk = dt.astimezone().date().isoformat()
+                    day = days.setdefault(dk, {"calls": 0, "sub_agents": 0,
+                                               "duration": 0, "turns": 0, "sessions": []})
+                    if session_id not in day["sessions"]:
+                        day["sessions"].append(session_id)
+                    typ = obj.get("type")
+                    data = obj.get("data") or {}
+                    if typ == "model.response.completed":
+                        day["calls"] += 1
+                        m = data.get("model")
+                        if m and ts >= model_ts:
+                            model, model_ts = m, ts
+                    elif typ == "turn.started":
+                        if data.get("is_subagent"):
+                            day["sub_agents"] += 1
+                    elif typ == "turn.finished":
+                        day["duration"] += int(data.get("duration_ms", 0) or 0) // 1000
+                        day["turns"] += int(data.get("num_turns", 0) or 0)
+        except Exception:
+            pass
+
+        fc[f] = {"sig": sig, "days": days, "model": model, "model_ts": model_ts}
+
+    for f in stale:
+        fc.pop(f, None)
+
+    _persist_tool_cache("qoder_cli", fc)
+    fc = _merged_tool_cache("qoder_cli", fc)
+
+    B = {k: {"sessions": set(), "calls": 0, "sub_agents": 0, "duration": 0, "turns": 0}
+         for k in RANGE_KEYS}
+    latest_model, latest_ts = None, ""
+
+    for entry in fc.values():
+        if not isinstance(entry, dict):
+            continue
+        m, mts = entry.get("model"), entry.get("model_ts", "")
+        if m and mts >= latest_ts:
+            latest_model, latest_ts = m, mts
+        for dk, day in entry.get("days", {}).items():
+            try:
+                d = date.fromisoformat(dk)
+            except ValueError:
+                continue
+            for k in classify_date(d, bounds):
+                b = B[k]
+                b["sessions"].update(day.get("sessions", []))
+                b["calls"] += day.get("calls", 0)
+                b["sub_agents"] += day.get("sub_agents", 0)
+                b["duration"] += day.get("duration", 0)
+                b["turns"] += day.get("turns", 0)
+
+    return {"ranges": B, "model": latest_model}
+
+
 # ---------- Hermes ----------
 # SQLite: ~/.hermes/state.db (旧布局) + ~/.hermes/profiles/*/state.db (profile 布局)
 def _hermes_db_paths():
@@ -2065,6 +2169,7 @@ def compute():
     gk = _safe_scan("grok", lambda: scan_grok(bounds, cache), _empty_grok, errors)
     qd = _safe_scan("qoderwork", lambda: scan_qoder(bounds, cache), _empty_qoder, errors)
     qi = _safe_scan("qoder_ide", lambda: scan_qoder_ide(bounds, cache), _empty_qoder_ide, errors)
+    qc = _safe_scan("qoder_cli", lambda: scan_qoder_cli(bounds, cache), _empty_qoder_cli, errors)
     hm = _safe_scan("hermes", lambda: scan_hermes(bounds, cache), _empty_hermes, errors)
     oc = _safe_scan("openclaw", lambda: scan_openclaw(bounds, cache), _empty_openclaw, errors)
     pi = _safe_scan("pi", lambda: scan_pi(bounds, cache), _empty_pi, errors)
@@ -2077,7 +2182,7 @@ def compute():
         models = []
         for n, v in sorted(b["models"].items(), key=lambda kv: -kv[1]["cost"]):
             p = price_for(n)
-            models.append({"name": nice_model(n), "in": v["in"], "out": v["out"],
+            models.append({"id": n, "name": nice_model(n), "in": v["in"], "out": v["out"],
                            "cr": v["cr"], "cw": v["cw"], "cost": v["cost"],
                            "pin": p["in"], "pout": p["out"]})
         return {"hit": hit, "in": b["in"], "out": b["out"],
@@ -2102,7 +2207,7 @@ def compute():
         models = []
         for n, v in sorted(b["models"].items(), key=lambda kv: -kv[1]["cost"]):
             p = gemini_price(n)
-            models.append({"name": nice_model(n), "in": max(v["in"] - v["cached"], 0),
+            models.append({"id": n, "name": nice_model(n), "in": max(v["in"] - v["cached"], 0),
                            "out": v["out"], "cached": v["cached"], "thoughts": v["thoughts"],
                            "cost": v["cost"], "pin": p["in"], "pout": p["out"]})
         return {"hit": hit, "in": max(b["in"] - b["cached"], 0), "out": b["out"],
@@ -2139,12 +2244,18 @@ def compute():
                 "calls": b.get("calls", 0), "messages": b.get("messages", 0),
                 "ctx": ctx, "duration": b.get("duration", 0)}
 
+    def qoder_cli_range(b):
+        return {"sessions": len(b.get("sessions", set())), "calls": b.get("calls", 0),
+                "sub_agents": b.get("sub_agents", 0), "turns": b.get("turns", 0),
+                "duration": b.get("duration", 0)}
+
     cranges = {k: claude_range(cc["ranges"][k]) for k in RANGE_KEYS}
     xranges = {k: codex_range(cx["ranges"][k]) for k in RANGE_KEYS}
     granges = {k: gemini_range(gm["ranges"][k]) for k in RANGE_KEYS}
     kranges = {k: grok_range(gk["ranges"][k]) for k in RANGE_KEYS}
     qwranges = {k: qoderwork_range(qd["ranges"][k]) for k in RANGE_KEYS}
     qranges = {k: qoder_range(qi["ranges"][k]) for k in RANGE_KEYS}
+    qcranges = {k: qoder_cli_range(qc["ranges"][k]) for k in RANGE_KEYS}
 
     def hermes_range(b):
         denom = b["cr"] + b["cw"] + b["in"]
@@ -2210,6 +2321,10 @@ def compute():
             "ranges": qranges,
             "model": qi.get("model"),
         },
+        "qoder_cli": {
+            "ranges": qcranges,
+            "model": qc.get("model"),
+        },
         "hermes": {
             "ranges": hranges,
         },
@@ -2242,14 +2357,14 @@ def _recalc_costs(result):
                 continue
             total_cost = 0.0
             for m in r["models"]:
-                name = m.get("name", "")
-                p = _raw_price(name)
+                mid = m.get("id", m.get("name", ""))
+                p = _raw_price(mid)
                 ti = m.get("in", 0)
                 to = m.get("out", 0)
                 if tool_key == "claude":
                     cr = m.get("cr", 0)
                     cw = m.get("cw", 0)
-                    pf = price_for(name)
+                    pf = price_for(mid)
                     cost = ti / 1e6 * pf["in"] + to / 1e6 * pf["out"] + cr / 1e6 * pf["cache_read"] + cw / 1e6 * pf["write5m"]
                 elif tool_key == "gemini":
                     cached = m.get("cached", 0)
