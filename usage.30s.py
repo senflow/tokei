@@ -436,7 +436,7 @@ def _empty_token_bucket():
 
 def _empty_token_day():
     return {"in": 0, "out": 0, "cr": 0, "cw": 0, "reason": 0,
-            "cost": 0.0, "models": {}}
+            "cost": 0.0, "models": {}, "hours": [0] * 24}
 
 
 def _empty_token_ranges():
@@ -473,11 +473,14 @@ def _add_codex_model_usage(models, model, inp=0, cached=0, out=0, reason=0, cost
     mm["cost"] += float(cost or 0)
 
 
-def _add_token_usage(target, inp=0, out=0, cr=0, cw=0, reason=0, cost=0.0, model=None):
+def _add_token_usage(target, inp=0, out=0, cr=0, cw=0, reason=0, cost=0.0, model=None, hour=None):
     target["in"] += int(inp or 0); target["out"] += int(out or 0)
     target["cr"] += int(cr or 0); target["cw"] += int(cw or 0); target["reason"] += int(reason or 0)
     target["cost"] += float(cost or 0)
     _add_model_usage(target.get("models", {}), model, inp, out, cr, cw, reason, cost)
+    if hour is not None and "hours" in target:
+        amount = int(inp or 0) + int(out or 0) + int(cr or 0) + int(cw or 0) + int(reason or 0)
+        target["hours"][hour] += amount
 
 
 def _merge_token_day(bucket, day, session=None):
@@ -1023,95 +1026,209 @@ def _codex_quota_values(limits, now_epoch=None):
 # 日志:~/.gemini/tmp/<projectHash>/chats/session-*.json
 # assistant 行 type=="gemini",tokens={input,output,cached,thoughts,total}
 # (total=input+output+thoughts,cached⊂input)。增量快照共用 sessionId,按 lastUpdated 去重。
+def _gemini_session_files():
+    """新版 Gemini CLI 把会话写成增量 .jsonl 事件日志;旧版是整份快照 .json。两种都找。"""
+    files = []
+    roots = _path_candidates("TOKEI_GEMINI_DIR", GEMINI_DIR, *GEMINI_DIRS)
+    patterns = []
+    for root in roots:
+        patterns.extend((
+            os.path.join(root, "*", "chats", "session-*.json"),
+            os.path.join(root, "*", "chats", "**", "*.jsonl"),
+            os.path.join(root, "**", "session-*.json"),
+            os.path.join(root, "**", "session-*.jsonl"),
+        ))
+    for pattern in patterns:
+        files.extend(glob.glob(pattern, recursive=True))
+    return sorted(set(os.path.realpath(path) for path in files if os.path.isfile(path)))
+
+
+def _gemini_apply_messages(message_map, messages, replace=False):
+    if replace:
+        message_map.clear()
+    if isinstance(messages, dict):
+        messages = [messages]
+    if not isinstance(messages, list):
+        return
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        message_id = message.get("id")
+        if message_id:
+            message_map[str(message_id)] = message
+
+
+def _load_gemini_usage_file(path):
+    """解析一个 gemini 会话文件 → {sid, updated, rank, events}。rank=2(jsonl,新版)优先于
+    rank=1(json 快照,旧版),同 session 两种格式都存在时选新版。"""
+    metadata = {}
+    messages = {}
+    rank = 2 if path.endswith(".jsonl") else 1
+    try:
+        if rank == 1:
+            with open(path, "r", encoding="utf-8", errors="ignore") as handle:
+                record = json.load(handle)
+            if not isinstance(record, dict):
+                return None
+            metadata.update(record)
+            _gemini_apply_messages(messages, record.get("messages"))
+        else:
+            with open(path, "r", encoding="utf-8", errors="ignore") as handle:
+                for line in handle:
+                    try:
+                        record = json.loads(line)
+                    except Exception:
+                        continue
+                    if not isinstance(record, dict):
+                        continue
+                    rewind_id = record.get("$rewindTo")
+                    if isinstance(rewind_id, str):
+                        keys = list(messages)
+                        if rewind_id in messages:
+                            for message_id in keys[keys.index(rewind_id):]:
+                                messages.pop(message_id, None)
+                        else:
+                            messages.clear()
+                        continue
+                    if isinstance(record.get("id"), str):
+                        messages[record["id"]] = record
+                        continue
+                    updates = record.get("$set")
+                    if isinstance(updates, dict):
+                        if isinstance(updates.get("messages"), list):
+                            _gemini_apply_messages(messages, updates["messages"], replace=True)
+                        metadata.update(updates)
+                        continue
+                    pushed = record.get("$push")
+                    if isinstance(pushed, dict):
+                        _gemini_apply_messages(messages, pushed.get("messages"))
+                        continue
+                    if isinstance(record.get("sessionId"), str):
+                        metadata.update(record)
+                        _gemini_apply_messages(messages, record.get("messages"))
+    except OSError:
+        return None
+
+    events = []
+    for message_id, message in messages.items():
+        tokens = message.get("tokens")
+        if message.get("type") != "gemini" or not isinstance(tokens, dict):
+            continue
+        timestamp = message.get("timestamp")
+        if not timestamp:
+            continue
+        events.append({
+            "id": message_id, "timestamp": timestamp, "model": message.get("model") or "unknown",
+            "tokens": {
+                "input": int(tokens.get("input", 0) or 0), "output": int(tokens.get("output", 0) or 0),
+                "cached": int(tokens.get("cached", 0) or 0), "thoughts": int(tokens.get("thoughts", 0) or 0),
+            },
+        })
+    return {
+        "sid": metadata.get("sessionId") or os.path.basename(path),
+        "updated": metadata.get("lastUpdated") or "", "rank": rank, "events": events,
+    }
+
+
 def scan_gemini(bounds, cache):
     fc = cache.setdefault("gemini", {})
-    if not os.path.isdir(GEMINI_DIR):
+    files = _gemini_session_files()
+    if not files:
         _persist_tool_cache("gemini", fc)
         fc = _merged_tool_cache("gemini", fc)
         return _gemini_assemble(fc, bounds)
 
-    best = {}  # sessionId -> (lastUpdated, data, file_path, sig),同 id 取最新快照
-    for f in glob.glob(os.path.join(GEMINI_DIR, "*", "chats", "session-*.json")):
+    stale = set(fc.keys())
+    for path in files:
+        stale.discard(path)
         try:
-            st = os.stat(f)
+            stat = os.stat(path)
         except OSError:
             continue
-        try:
-            with open(f, "r", encoding="utf-8", errors="ignore") as fh:
-                d = json.load(fh)
-        except Exception:
+        signature = f"{stat.st_mtime_ns}:{stat.st_size}"
+        entry = fc.get(path)
+        if entry and entry.get("sig") == signature:
             continue
-        sid = d.get("sessionId") or f
-        lu = d.get("lastUpdated") or ""
-        if sid not in best or lu > best[sid][0]:
-            sig = f"{st.st_mtime}:{st.st_size}"
-            best[sid] = (lu, d, f, sig)
-
-    stale = set(fc.keys())
-    for sid, (lu, d, f, sig) in best.items():
-        stale.discard(sid)
-        entry = fc.get(sid)
-        if entry and entry.get("sig") == sig:
+        parsed = _load_gemini_usage_file(path)
+        if parsed is None:
             continue
-        days = {}
-        for m in d.get("messages", []):
-            if m.get("type") != "gemini":
-                continue
-            tk = m.get("tokens")
-            if not tk:
-                continue
-            dt = parse_ts(m.get("timestamp", ""))
-            if dt is None:
-                continue
-            dk = dt.astimezone().date().isoformat()
-            model = m.get("model")
-            inp = tk.get("input", 0) or 0
-            out = tk.get("output", 0) or 0
-            cached = tk.get("cached", 0) or 0
-            th = tk.get("thoughts", 0) or 0
-            p = gemini_price(model)
-            cost = (max(inp - cached, 0) / 1e6 * p["in"]
-                    + cached / 1e6 * p["cache_read"]
-                    + (out + th) / 1e6 * p["out"])
-            day = days.setdefault(dk, {"in": 0, "out": 0, "cached": 0, "thoughts": 0,
-                                       "cost": 0.0, "models": {}})
-            day["in"] += inp; day["out"] += out
-            day["cached"] += cached; day["thoughts"] += th; day["cost"] += cost
-            mm = day["models"].setdefault(
-                model, {"in": 0, "out": 0, "cached": 0, "thoughts": 0, "cost": 0.0})
-            mm["in"] += inp; mm["out"] += out
-            mm["cached"] += cached; mm["thoughts"] += th; mm["cost"] += cost
-        fc[sid] = {"sig": sig, "days": days}
+        parsed["sig"] = signature
+        parsed["mtime"] = stat.st_mtime_ns
+        fc[path] = parsed
 
     for p in stale:
         fc.pop(p, None)
 
     _persist_tool_cache("gemini", fc)
     fc = _merged_tool_cache("gemini", fc)
-    return _gemini_assemble(fc, bounds)
+
+    # 同一个 sessionId 可能同时有旧版 json 快照和新版 jsonl 事件日志两份文件,
+    # 按 (rank, updated, mtime) 取最新/最全的那份,避免重复计入。
+    sessions = {}
+    for path, entry in fc.items():
+        if not isinstance(entry, dict):
+            continue
+        sid = entry.get("sid") or path
+        score = (int(entry.get("rank", 0)), entry.get("updated") or "", int(entry.get("mtime", 0)))
+        current = sessions.get(sid)
+        if current is None or score > current[0]:
+            sessions[sid] = (score, path, entry)
+
+    days = {}
+    for sid, (_, path, entry) in sessions.items():
+        for event in entry.get("events", []):
+            dt = parse_ts(event.get("timestamp", ""))
+            if dt is None:
+                continue
+            dt = dt.astimezone()
+            tokens = event.get("tokens") or {}
+            model = event.get("model") or "unknown"
+            inp = int(tokens.get("input", 0) or 0)
+            out = int(tokens.get("output", 0) or 0)
+            cached = int(tokens.get("cached", 0) or 0)
+            thoughts = int(tokens.get("thoughts", 0) or 0)
+            price = gemini_price(model)
+            cost = (max(inp - cached, 0) / 1e6 * price["in"] + cached / 1e6 * price["cache_read"]
+                    + (out + thoughts) / 1e6 * price["out"])
+            dk = dt.date().isoformat()
+            day = days.setdefault(dk, {"in": 0, "out": 0, "cached": 0, "thoughts": 0,
+                                       "cost": 0.0, "models": {}, "sessions": set(), "hours": [0] * 24})
+            day["in"] += inp; day["out"] += out; day["cached"] += cached
+            day["thoughts"] += thoughts; day["cost"] += cost; day["sessions"].add(sid)
+            day["hours"][dt.hour] += inp + out + thoughts
+            mm = day["models"].setdefault(
+                model, {"in": 0, "out": 0, "cached": 0, "thoughts": 0, "cost": 0.0})
+            mm["in"] += inp; mm["out"] += out; mm["cached"] += cached
+            mm["thoughts"] += thoughts; mm["cost"] += cost
+
+    return _gemini_assemble_days(days, bounds)
 
 
-def _gemini_assemble(fc, bounds):
+def _gemini_assemble_days(days, bounds):
     B = {k: {"in": 0, "out": 0, "cached": 0, "thoughts": 0, "cost": 0.0,
              "models": {}, "sessions": set()}
          for k in RANGE_KEYS}
-    for sid, entry in fc.items():
-        for dk, day in entry.get("days", {}).items():
-            try:
-                d = date.fromisoformat(dk)
-            except ValueError:
-                continue
-            for k in classify_date(d, bounds):
-                b = B[k]
-                b["sessions"].add(sid)
-                b["in"] += day["in"]; b["out"] += day["out"]
-                b["cached"] += day["cached"]; b["thoughts"] += day["thoughts"]; b["cost"] += day["cost"]
-                for mn, mv in day.get("models", {}).items():
-                    mm = b["models"].setdefault(
-                        mn, {"in": 0, "out": 0, "cached": 0, "thoughts": 0, "cost": 0.0})
-                    mm["in"] += mv["in"]; mm["out"] += mv["out"]
-                    mm["cached"] += mv["cached"]; mm["thoughts"] += mv["thoughts"]; mm["cost"] += mv["cost"]
+    for dk, day in days.items():
+        try:
+            d = date.fromisoformat(dk)
+        except ValueError:
+            continue
+        for k in classify_date(d, bounds):
+            b = B[k]
+            b["sessions"].update(day.get("sessions", set()))
+            b["in"] += day["in"]; b["out"] += day["out"]
+            b["cached"] += day["cached"]; b["thoughts"] += day["thoughts"]; b["cost"] += day["cost"]
+            for mn, mv in day.get("models", {}).items():
+                mm = b["models"].setdefault(
+                    mn, {"in": 0, "out": 0, "cached": 0, "thoughts": 0, "cost": 0.0})
+                mm["in"] += mv["in"]; mm["out"] += mv["out"]
+                mm["cached"] += mv["cached"]; mm["thoughts"] += mv["thoughts"]; mm["cost"] += mv["cost"]
     return {"ranges": B}
+
+
+def _gemini_assemble(fc, bounds):
+    """兜底路径(无会话文件时):fc 为空,直接给全零 ranges。"""
+    return _gemini_assemble_days({}, bounds)
 
 
 # ---------- Grok CLI ----------
@@ -1865,10 +1982,12 @@ def scan_openclaw(bounds, cache):
 # JSONL 文件: ~/.pi/agent/sessions/<encoded-cwd>/*.jsonl
 # assistant message 里保存 usage{input,output,cacheRead,cacheWrite,cost}。
 def _pi_session_dirs():
-    dirs = [PI_SESSION_DIR, os.path.join(PI_AGENT_DIR, "sessions"), os.path.join(HOME, ".pi", "agent", "sessions")]
+    # Oh My Pi(OMP)是 Pi Coding Agent 的一个社区 fork,复用同一套会话 jsonl schema。
+    dirs = [PI_SESSION_DIR, os.path.join(PI_AGENT_DIR, "sessions"),
+            os.path.join(HOME, ".pi", "agent", "sessions"), OMP_SESSION_DIR]
     out = []
     for d in dirs:
-        d = os.path.abspath(os.path.expanduser(d))
+        d = os.path.realpath(os.path.abspath(os.path.expanduser(d)))
         if d not in out:
             out.append(d)
     return out
@@ -1956,9 +2075,10 @@ def scan_pi(bounds, cache):
                         cost = _pi_usage_cost(u, model)
                         if inp + out + cr + cw + reason == 0 and cost <= 0:
                             continue
-                        dk = dt.astimezone().date().isoformat()
+                        dt_local = dt.astimezone()
+                        dk = dt_local.date().isoformat()
                         day = days.setdefault(dk, _empty_token_day())
-                        _add_token_usage(day, inp, out, cr, cw, reason, cost, model)
+                        _add_token_usage(day, inp, out, cr, cw, reason, cost, model, hour=dt_local.hour)
             except OSError:
                 continue
             fc[f] = {"sig": sig, "days": days, "proj": proj, "sid": sid}
