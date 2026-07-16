@@ -43,6 +43,7 @@ enum Theme {
     static let grok      = Color(red: 0.65, green: 0.68, blue: 0.75)   // cool silver
     static let qoder     = Color(red: 0.90, green: 0.75, blue: 0.35)   // amber gold
     static let qoderwork = Color(red: 0.75, green: 0.65, blue: 0.30)   // dark amber
+    static let qoderCli  = Color(red: 0.95, green: 0.60, blue: 0.25)   // burnt orange
     static let hermes    = Color(red: 0.40, green: 0.82, blue: 0.60)   // emerald
     static let openclaw  = Color(red: 0.85, green: 0.45, blue: 0.68)   // rose
     static let pi        = Color(red: 0.74, green: 0.58, blue: 0.95)   // soft purple

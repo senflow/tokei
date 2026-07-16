@@ -29,13 +29,14 @@ struct PanelView: View {
     @AppStorage("showGrok") private var showGrok = true
     @AppStorage("showQoderIde") private var showQoder = true
     @AppStorage("showQoderWork") private var showQoderWork = true
+    @AppStorage("showQoderCli") private var showQoderCli = true
     @AppStorage("showHermes") private var showHermes = true
     @AppStorage("showOpenClaw") private var showOpenClaw = true
     @AppStorage("showPi") private var showPi = true
     @AppStorage("showOpenCode") private var showOpenCode = true
 
     private var visibleCount: Int {
-        [showClaude, showCodex, showGemini, showGrok, showQoder, showQoderWork, showHermes, showOpenClaw, showPi, showOpenCode].filter { $0 }.count
+        [showClaude, showCodex, showGemini, showGrok, showQoder, showQoderWork, showQoderCli, showHermes, showOpenClaw, showPi, showOpenCode].filter { $0 }.count
     }
     private var hasMultipleDevices: Bool { store.syncEnabled && !store.peers.isEmpty }
     private struct DeviceOption: Identifiable, Hashable {
@@ -239,6 +240,7 @@ struct PanelView: View {
         let cr = u.claude.ranges.get(sel), xr = u.codex.ranges.get(sel)
         let gr = u.gemini.ranges.get(sel), kr = u.grok.ranges.get(sel)
         let qr = u.qoder.ranges.get(sel), qwr = u.qoderwork.ranges.get(sel)
+        let qcr = u.qoderCli.ranges.get(sel)
         let hr = u.hermes.ranges.get(sel)
         let lr = u.openclaw.ranges.get(sel), pr = u.pi.ranges.get(sel), or = u.opencode.ranges.get(sel)
         return [
@@ -254,6 +256,8 @@ struct PanelView: View {
                          tint: Theme.qoder, content: AnyView(qoderIdeBlock(u.qoder, qr))),
             ToolCardItem(id: "qoderwork", name: "QoderWork", visible: showQoderWork, active: qwr.calls > 0,
                          tint: Theme.qoderwork, content: AnyView(qoderworkBlock(u.qoderwork, qwr))),
+            ToolCardItem(id: "qoder_cli", name: "Qoder CLI", visible: showQoderCli, active: qcr.calls > 0,
+                         tint: Theme.qoderCli, content: AnyView(qoderCliBlock(u.qoderCli, qcr))),
             ToolCardItem(id: "hermes", name: "Hermes", visible: showHermes, active: hr.sessions > 0,
                          tint: Theme.hermes, content: AnyView(hermesBlock(hr))),
             ToolCardItem(id: "openclaw", name: "OpenClaw", visible: showOpenClaw, active: lr.tasks > 0 || lr.in + lr.out > 0,
@@ -510,6 +514,37 @@ struct PanelView: View {
                 }(), tint: Theme.qoderwork)
                 if let model = q.model, !model.isEmpty {
                     modelBadge(model, tint: Theme.qoderwork)
+                }
+            } else {
+                emptyHint
+            }
+        }
+    }
+
+    // MARK: - Qoder CLI 卡片
+    @ViewBuilder
+    func qoderCliBlock(_ q: QoderCliStat, _ r: QoderCliRange) -> some View {
+        VStack(alignment: .leading, spacing: 11) {
+            cardHeadPlain("Qoder CLI", tint: Theme.qoderCli)
+            if r.calls > 0 {
+                metricGrid({
+                    var items: [Metric] = [
+                        .init("terminal", "调用", "\(r.calls)"),
+                        .init("person.2", "会话", "\(r.sessions)"),
+                    ]
+                    if r.duration > 0 {
+                        items.append(.init("clock", "耗时", Fmt.duration(r.duration * 1000)))
+                    }
+                    if r.sub_agents > 0 {
+                        items.append(.init("point.3.connected.trianglepath.dotted", "子agent", "\(r.sub_agents)"))
+                    }
+                    if r.turns > 0 {
+                        items.append(.init("bubble.left.and.bubble.right", "轮次", Fmt.human(r.turns)))
+                    }
+                    return items
+                }(), tint: Theme.qoderCli)
+                if let model = q.model, !model.isEmpty {
+                    modelBadge(model, tint: Theme.qoderCli)
                 }
             } else {
                 emptyHint
@@ -1238,6 +1273,7 @@ struct PanelView: View {
                 settingsRow("Grok", tint: Theme.grok, isOn: $showGrok)
                 settingsRow("Qoder", tint: Theme.qoder, isOn: $showQoder)
                 settingsRow("QoderWork", tint: Theme.qoderwork, isOn: $showQoderWork)
+                settingsRow("Qoder CLI", tint: Theme.qoderCli, isOn: $showQoderCli)
                 settingsRow("Hermes", tint: Theme.hermes, isOn: $showHermes)
                 settingsRow("OpenClaw", tint: Theme.openclaw, isOn: $showOpenClaw)
                 settingsRow("Pi", tint: Theme.pi, isOn: $showPi)

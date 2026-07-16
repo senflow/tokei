@@ -131,6 +131,8 @@ final class SyncManager {
             u.grok.model = mergeModelName(u.grok.model, peer.usage.grok.model)
             mergeRanges(&u.qoderwork.ranges, peer.usage.qoderwork.ranges, pairs)
             mergeRanges(&u.qoder.ranges, peer.usage.qoder.ranges, pairs)
+            mergeRanges(&u.qoderCli.ranges, peer.usage.qoderCli.ranges, pairs)
+            u.qoderCli.model = mergeModelName(u.qoderCli.model, peer.usage.qoderCli.model)
             mergeRanges(&u.hermes.ranges, peer.usage.hermes.ranges, pairs)
             mergeRanges(&u.openclaw.ranges, peer.usage.openclaw.ranges, pairs)
             mergeRanges(&u.pi.ranges, peer.usage.pi.ranges, pairs)
@@ -267,6 +269,15 @@ final class SyncManager {
             d.sub_agents += s.sub_agents; d.calls += s.calls
             d.messages += s.messages; d.duration += s.duration
             d.ctx = weightedAverage(d.ctx, originalSessions, s.ctx, s.sessions)
+            dst.set(pair.dst, d)
+        }
+    }
+
+    private static func mergeRanges(_ dst: inout QoderCliRanges, _ src: QoderCliRanges, _ pairs: [(src: RangeKey, dst: RangeKey)]) {
+        for pair in pairs {
+            var d = dst.get(pair.dst), s = src.get(pair.src)
+            d.sessions += s.sessions; d.calls += s.calls
+            d.sub_agents += s.sub_agents; d.turns += s.turns; d.duration += s.duration
             dst.set(pair.dst, d)
         }
     }

@@ -357,6 +357,70 @@ struct QoderIdeStat: Codable {
     var model: String?
 }
 
+struct QoderCliRange: Codable {
+    var sessions: Int = 0
+    var calls: Int = 0
+    var sub_agents: Int = 0
+    var turns: Int = 0
+    var duration: Int = 0
+
+    enum CodingKeys: String, CodingKey {
+        case sessions, calls, sub_agents, turns, duration
+    }
+
+    init(sessions: Int = 0, calls: Int = 0, sub_agents: Int = 0, turns: Int = 0, duration: Int = 0) {
+        self.sessions = sessions
+        self.calls = calls
+        self.sub_agents = sub_agents
+        self.turns = turns
+        self.duration = duration
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        sessions = try c.decodeIfPresent(Int.self, forKey: .sessions) ?? 0
+        calls = try c.decodeIfPresent(Int.self, forKey: .calls) ?? 0
+        sub_agents = try c.decodeIfPresent(Int.self, forKey: .sub_agents) ?? 0
+        turns = try c.decodeIfPresent(Int.self, forKey: .turns) ?? 0
+        duration = try c.decodeIfPresent(Int.self, forKey: .duration) ?? 0
+    }
+}
+
+struct QoderCliRanges: Codable {
+    var today: QoderCliRange
+    var yesterday: QoderCliRange
+    var week: QoderCliRange
+    var last_week: QoderCliRange
+    var month: QoderCliRange
+    var year: QoderCliRange
+    var all: QoderCliRange? = nil
+    static var empty: QoderCliRanges {
+        let r = QoderCliRange()
+        return QoderCliRanges(today: r, yesterday: r, week: r, last_week: r, month: r, year: r)
+    }
+    func get(_ k: RangeKey) -> QoderCliRange {
+        switch k {
+        case .today: return today; case .yesterday: return yesterday
+        case .week: return week; case .lastWeek: return last_week
+        case .month: return month; case .year: return year
+        case .all: return all ?? year
+        }
+    }
+    mutating func set(_ k: RangeKey, _ v: QoderCliRange) {
+        switch k {
+        case .today: today = v; case .yesterday: yesterday = v
+        case .week: week = v; case .lastWeek: last_week = v
+        case .month: month = v; case .year: year = v
+        case .all: all = v
+        }
+    }
+}
+
+struct QoderCliStat: Codable {
+    var ranges: QoderCliRanges
+    var model: String?
+}
+
 struct HermesRange: Codable {
     var hit: Double
     var `in`: Int
@@ -535,6 +599,7 @@ struct Usage: Codable {
     var grok: GrokStat
     var qoderwork: QoderStat
     var qoder: QoderIdeStat
+    var qoderCli: QoderCliStat
     var hermes: HermesStat
     var openclaw: OpenClawStat
     var pi: TokenUsageStat
@@ -542,6 +607,7 @@ struct Usage: Codable {
 
     enum CodingKeys: String, CodingKey {
         case claude, codex, gemini, grok, qoder, qoderwork, hermes, openclaw, pi, opencode
+        case qoderCli = "qoder_cli"
     }
 
     init(from decoder: Decoder) throws {
@@ -555,6 +621,8 @@ struct Usage: Codable {
             ?? QoderStat(ranges: .empty, model: nil)
         qoder = (try? c.decodeIfPresent(QoderIdeStat.self, forKey: .qoder))
             ?? QoderIdeStat(ranges: .empty, model: nil)
+        qoderCli = try c.decodeIfPresent(QoderCliStat.self, forKey: .qoderCli)
+            ?? QoderCliStat(ranges: .empty, model: nil)
         hermes = try c.decode(HermesStat.self, forKey: .hermes)
         openclaw = try c.decode(OpenClawStat.self, forKey: .openclaw)
         pi = try c.decodeIfPresent(TokenUsageStat.self, forKey: .pi) ?? TokenUsageStat(ranges: .empty)
