@@ -32,14 +32,22 @@ Tokei 是一款 **macOS 菜单栏应用**，实时追踪你在 **9 款 AI 编程
 - Codex 配额窗口按时长（`window_minutes`）识别，不再假设 primary=5h / secondary=周，兼容新版 Codex 返回结构
 - 多设备同步稳定性：同步脚本只 `add` 自己的设备文件、`fetch`+`rebase`+`push`，避免多设备并发推送互相冲突；`config.json` 改成合并写入，不再整体覆盖丢失其他字段
 - Qoder IDE 开关状态启动时主动落盘，修复首次启动不采集数据的问题
+- Gemini CLI 扫描器支持新版增量 `.jsonl` 会话日志（旧版整份快照 `.json` 仍兼容）
+- OpenCode 扫描器支持新版 SQLite 用量采集（`opencode.db`），旧版逐消息 JSON 作为补充来源
+- Pi Coding Agent 扫描器支持 Oh My Pi(OMP)fork 的会话目录
+- Claude/Gemini/Pi/新工具的每日统计补充 `hours[24]` 逐小时字段,回顾页作息分析覆盖面更广
+- 新增 Qwen Code CLI、ZCode、MiMoCode、WorkBuddy 四款工具的本地用量采集
+- 开机自启动加 LaunchAgent 兜底：ad-hoc 签名的 app 重新签名后 `SMAppService` 注册容易失效，现在会自动用 LaunchAgent 兜底并在每次启动时自愈
+- 自动更新加固：SHA256 校验下载包、仅信任 GitHub 域名、原子安装+签名校验失败自动回滚
 
 **没有跟的：**
 - Codex 实时配额联网拉取——上游默认**开启**（用 Codex 登录态请求官方接口）。本 fork **合并了这个能力但默认关闭**，需要显式设置环境变量 `TOKEI_CODEX_LIVE_QUOTA=1` 才会联网，维持"默认零网络、不需要登录"的定位
 - 自动更新检查、GitHub 链接等均已指向本仓库，不会拉取上游发布版本或覆盖本地改动
+- 上游自建 CDN(`dl.lanshuagent.com`)相关的更新元数据生成脚本——本 fork 只走 GitHub Releases,复用 GitHub API 原生的 asset digest,不需要额外脚本
 
 **本 fork 新增的功能：**
 - 多设备用量选择器：不再只是"本机 / 全部"二选一，可以从多设备列表里选中**任意一台具体设备**单独查看用量（设备名取自设置里的设备名 / deviceId）。设备数 ≤5 台时用分段控件快速切换，>5 台自动改为下拉列表，默认展示仍是"全部"
-- 开机自启动开关（基于 `ServiceManagement.SMAppService`）
+- 开机自启动开关（基于 `ServiceManagement.SMAppService`，见上方 LaunchAgent 兜底）
 
 **移除的功能：**
 - 回顾页底部"这些花费 ≈ N 杯咖啡 / N 顿火锅 / 码了 N 字"的随机彩蛋提示
@@ -55,9 +63,14 @@ Tokei 是一款 **macOS 菜单栏应用**，实时追踪你在 **9 款 AI 编程
 | **Grok CLI** | Token、会话、上下文 |
 | **Hermes** | Token、成本、缓存命中率、模型 |
 | **OpenClaw** | Token、成本、任务、模型 |
-| **Pi Coding Agent CLI** | Token、成本、缓存命中率、模型、项目 |
-| **OpenCode** | Token、成本、缓存命中率、模型 |
+| **Pi Coding Agent CLI**（含 Oh My Pi fork） | Token、成本、缓存命中率、模型、项目 |
+| **OpenCode**（SQLite + 旧版 JSON） | Token、成本、缓存命中率、模型 |
 | **Qoder** | Token、调用次数、配额 |
+| **Qoder CLI** | 调用次数、会话、耗时、子 agent |
+| **Qwen Code CLI** | Token、成本、缓存命中率、模型 |
+| **ZCode** | Token、成本、缓存命中率、模型 |
+| **MiMoCode** | Token、成本、缓存命中率、模型 |
+| **WorkBuddy** | Token、成本、缓存命中率、模型 |
 
 ## 功能一览
 
@@ -192,6 +205,19 @@ chmod +x ~/.tokei/tokei-sync.sh
 > CodexBar 在提供商覆盖和配额可见性上表现出色。Tokei 更深入——Token 级分析、成本趋势、项目维度拆分、跨设备同步——全部无需登录。
 
 ## 更新日志
+
+### v1.0.10
+- fix: 模型成本重算改按原始 model id 查价，不再按显示名兜底（曾导致 Fable 5 / Sonnet 5 按 Opus/Sonnet 4.6 价格计费）
+- fix: 价格编辑器改用独立窗口，修复挂在菜单栏 popover 上的 `.sheet` 被外部点击关闭时卡死整个 app 的问题
+- fix: 多设备同步的 commit+rebase 现在会重试，修复后台 30 秒刷新和同步竞态导致本机提交推不上去的问题
+- fix: Gemini CLI 扫描器支持新版增量 `.jsonl` 会话日志
+- fix: OpenCode 扫描器支持新版 SQLite 用量采集，旧版 JSON 仍作为补充来源
+- fix: Pi Coding Agent 扫描器支持 Oh My Pi(OMP)fork
+- feat: 新增 Qoder CLI 用量追踪
+- feat: 新增 Qwen Code CLI、ZCode、MiMoCode、WorkBuddy 四款工具
+- feat: Claude/Gemini/Pi/新工具补充逐小时(`hours[24]`)统计
+- feat: 开机自启动加 LaunchAgent 兜底 + 自愈,不再因重新签名悄悄失效
+- feat: 自动更新加固——SHA256 校验、域名白名单、原子安装失败自动回滚
 
 ### Fork 修改（基于上游 v1.0.9）
 详见上面「本 Fork 相对上游的修改」。
