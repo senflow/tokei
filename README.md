@@ -206,6 +206,9 @@ chmod +x ~/.tokei/tokei-sync.sh
 
 ## 更新日志
 
+### v1.0.11
+- feat: 应用图标改为鸽子 🕊️（直接渲染系统 Apple Color Emoji 字形，原生配色，透明背景）
+
 ### v1.0.10
 - fix: 模型成本重算改按原始 model id 查价，不再按显示名兜底（曾导致 Fable 5 / Sonnet 5 按 Opus/Sonnet 4.6 价格计费）
 - fix: 价格编辑器改用独立窗口，修复挂在菜单栏 popover 上的 `.sheet` 被外部点击关闭时卡死整个 app 的问题

@@ -163,10 +163,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func updateStatusTitle() {
         guard let b = statusItem?.button else { return }
-        let cfg = NSImage.SymbolConfiguration(pointSize: 14, weight: .semibold)
-            .applying(NSImage.SymbolConfiguration(paletteColors: [Self.iconColor]))
-        let img = NSImage(systemSymbolName: "timer", accessibilityDescription: nil)?
-            .withSymbolConfiguration(cfg)
+        let img: NSImage?
+        if let url = Bundle.main.url(forResource: "dove_menubar", withExtension: "png") {
+            img = NSImage(contentsOf: url)
+            img?.size = NSSize(width: 18, height: 18)
+        } else {
+            let cfg = NSImage.SymbolConfiguration(pointSize: 14, weight: .semibold)
+                .applying(NSImage.SymbolConfiguration(paletteColors: [Self.iconColor]))
+            img = NSImage(systemSymbolName: "timer", accessibilityDescription: nil)?
+                .withSymbolConfiguration(cfg)
+        }
         img?.isTemplate = false
         b.image = img
         b.imagePosition = .imageOnly
