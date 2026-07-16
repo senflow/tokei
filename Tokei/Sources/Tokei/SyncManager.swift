@@ -425,6 +425,11 @@ final class SyncManager {
             // 避免多设备并发推送时互相提交/覆盖对方的同步文件。
             // rebase 失败(冲突)时立即 abort,不能把仓库留在半 rebase 的状态,
             // 否则对端文件会被写入冲突标记、之后再也解析不了(JSON 直接损坏)。
+            // store.refresh() 每 30 秒会重写本机的设备文件,和这里的 commit+rebase
+            // 完全不在同一个调度上 —— 如果 refresh 恰好在 commit 之后、rebase 之前
+            // 又写了一次文件,rebase 会因为工作区变脏而直接失败,导致本机的提交永远
+            // 推不上去、也拉不到其它设备的新数据。这里用重试吸收这类竞态:每次 rebase
+            // 失败后重新 add+commit 一次最新状态,再重试,而不是失败一次就放弃。
             let script = """
             cd '\(escapedDir)' || exit 1
             git rebase --abort >/dev/null 2>&1
@@ -434,14 +439,26 @@ final class SyncManager {
             if [ -z "$device_file" ]; then
               device_file='./\(escapedDevice).json'
             fi
-            git add -- "$device_file" || exit 1
-            if ! git diff --cached --quiet; then
-              git commit -m 'tokei sync \(escapedDevice)' || exit 1
-            fi
-            if ! git rebase origin/main >/dev/null 2>&1; then
+            commit_latest() {
+              git add -- "$device_file" || return 1
+              if ! git diff --cached --quiet; then
+                git commit -m 'tokei sync \(escapedDevice)' || return 1
+              fi
+              return 0
+            }
+            commit_latest || exit 1
+            attempt=0
+            while true; do
+              if git rebase origin/main >/dev/null 2>&1; then
+                break
+              fi
               git rebase --abort >/dev/null 2>&1
-              exit 1
-            fi
+              attempt=$((attempt + 1))
+              if [ $attempt -ge 3 ]; then
+                exit 1
+              fi
+              commit_latest || exit 1
+            done
             git push origin HEAD:main 2>/dev/null
             """
             let proc = Process()
