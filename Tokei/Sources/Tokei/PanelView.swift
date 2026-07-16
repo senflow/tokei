@@ -121,9 +121,6 @@ struct PanelView: View {
             footer
         }
         .padding(Theme.outerPad)
-        .sheet(isPresented: $showPricingEditor) {
-            PricingEditorView()
-        }
     }
 
     // MARK: - 品牌头部
@@ -1154,7 +1151,6 @@ struct PanelView: View {
     @ObservedObject private var loginItem = LoginItemManager.shared
     @State private var priceUpdating = false
     @State private var priceResult = ""
-    @State private var showPricingEditor = false
     @State private var cachedRemoteUrl = ""
     @State private var remoteGuideExpanded = false
     @AppStorage("syncDir") private var syncDir = ""
@@ -1289,7 +1285,7 @@ struct PanelView: View {
                 .disabled(priceUpdating)
 
                 settingsActionButton(icon: "eye", title: "查看/编辑") {
-                    showPricingEditor = true
+                    (NSApp.delegate as? AppDelegate)?.showPricingEditor()
                 }
 
                 if priceUpdating { ProgressView().controlSize(.mini) }

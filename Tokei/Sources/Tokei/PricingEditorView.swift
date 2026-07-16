@@ -19,7 +19,9 @@ struct PricingEntry: Identifiable {
 }
 
 struct PricingEditorView: View {
-    @Environment(\.dismiss) private var dismiss
+    // 价格表放在独立窗口里显示(而不是挂在菜单栏 NSPopover 上的 .sheet),
+    // 避免 popover 在 sheet 打开时被外部点击关掉、留下悬挂的 modal 会话导致整个 app 卡死。
+    var onClose: () -> Void = {}
     @State private var entries: [PricingEntry] = []
     @State private var searchText = ""
     @State private var selectedVendor = "全部"
@@ -70,7 +72,7 @@ struct PricingEditorView: View {
                 Button("保存") { saveOverrides() }
                     .font(.system(size: 11, weight: .medium))
                     .disabled(saving)
-                Button("关闭") { dismiss() }
+                Button("关闭") { onClose() }
                     .font(.system(size: 11))
             }
             .padding(.horizontal, 16).padding(.vertical, 12)

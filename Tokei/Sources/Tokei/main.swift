@@ -109,6 +109,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var popover = NSPopover()
     var timer: Timer?
     var globalMouseMonitor: Any?
+    var pricingWindow: NSWindow?
 
     // Menu bar icon colour
     static let iconColor = NSColor.white
@@ -144,6 +145,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self = self, self.popover.isShown else { return }
             if let popoverWindow = self.popover.contentViewController?.view.window,
                popoverWindow == event.window { return }
+            // 若 popover 上还挂着 sheet 或子窗口,直接关掉 popover 会把 sheet 的
+            // modal 会话遗留下来,导致整个 app 卡死。此时不主动关闭。
+            if let popoverWindow = self.popover.contentViewController?.view.window,
+               popoverWindow.attachedSheet != nil || !(popoverWindow.childWindows ?? []).isEmpty {
+                return
+            }
             self.popover.close()
         }
 
@@ -187,6 +194,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             store.refresh()
             popover.show(relativeTo: b.bounds, of: b, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
+        }
+    }
+
+    /// 在独立窗口里打开价格表。不再用挂在 popover 上的 .sheet,
+    /// 避免 popover 生命周期(外部点击关闭等)与 sheet 冲突导致的卡死。
+    func showPricingEditor() {
+        if let w = pricingWindow {
+            NSApp.activate(ignoringOtherApps: true)
+            w.makeKeyAndOrderFront(nil)
+            return
+        }
+        let host = NSHostingController(rootView: PricingEditorView(onClose: { [weak self] in
+            self?.pricingWindow?.close()
+        }))
+        host.sizingOptions = .preferredContentSize
+        let window = NSWindow(contentViewController: host)
+        window.title = "模型价格表"
+        window.styleMask = [.titled, .closable]
+        window.isReleasedWhenClosed = false
+        window.delegate = self
+        window.center()
+        pricingWindow = window
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+    }
+}
+
+extension AppDelegate: NSWindowDelegate {
+    func windowWillClose(_ notification: Notification) {
+        if let w = notification.object as? NSWindow, w == pricingWindow {
+            pricingWindow = nil
         }
     }
 }
