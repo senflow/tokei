@@ -48,6 +48,10 @@ enum Theme {
     static let openclaw  = Color(red: 0.85, green: 0.45, blue: 0.68)   // rose
     static let pi        = Color(red: 0.74, green: 0.58, blue: 0.95)   // soft purple
     static let opencode  = Color(red: 0.55, green: 0.75, blue: 0.90)   // sky grey
+    static let zcode     = Color(red: 0.45, green: 0.72, blue: 0.55)   // jade green
+    static let mimocode  = Color(red: 0.95, green: 0.68, blue: 0.55)   // peach
+    static let workbuddy = Color(red: 0.50, green: 0.60, blue: 0.90)   // periwinkle
+    static let qwencode  = Color(red: 0.80, green: 0.35, blue: 0.35)   // brick red
 
     // Layout
     static let panelWidth: CGFloat = 322

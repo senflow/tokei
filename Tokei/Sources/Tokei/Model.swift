@@ -604,10 +604,15 @@ struct Usage: Codable {
     var openclaw: OpenClawStat
     var pi: TokenUsageStat
     var opencode: TokenUsageStat
+    var zcode: TokenUsageStat
+    var mimocode: TokenUsageStat
+    var workbuddy: TokenUsageStat
+    var qwencode: TokenUsageStat
 
     enum CodingKeys: String, CodingKey {
         case claude, codex, gemini, grok, qoder, qoderwork, hermes, openclaw, pi, opencode
         case qoderCli = "qoder_cli"
+        case zcode, mimocode, workbuddy, qwencode
     }
 
     init(from decoder: Decoder) throws {
@@ -627,6 +632,10 @@ struct Usage: Codable {
         openclaw = try c.decode(OpenClawStat.self, forKey: .openclaw)
         pi = try c.decodeIfPresent(TokenUsageStat.self, forKey: .pi) ?? TokenUsageStat(ranges: .empty)
         opencode = try c.decode(TokenUsageStat.self, forKey: .opencode)
+        zcode = try c.decodeIfPresent(TokenUsageStat.self, forKey: .zcode) ?? TokenUsageStat(ranges: .empty)
+        mimocode = try c.decodeIfPresent(TokenUsageStat.self, forKey: .mimocode) ?? TokenUsageStat(ranges: .empty)
+        workbuddy = try c.decodeIfPresent(TokenUsageStat.self, forKey: .workbuddy) ?? TokenUsageStat(ranges: .empty)
+        qwencode = try c.decodeIfPresent(TokenUsageStat.self, forKey: .qwencode) ?? TokenUsageStat(ranges: .empty)
     }
 }
 

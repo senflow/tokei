@@ -21,20 +21,97 @@ import re
 from datetime import datetime, timedelta, date
 
 HOME = os.path.expanduser("~")
+
+
+def _expand_path(path):
+    if not path:
+        return None
+    value = os.fspath(path).strip()
+    return os.path.abspath(os.path.expandvars(os.path.expanduser(value))) if value else None
+
+
+def _path_candidates(env_name, *defaults):
+    """env 变量(: 分隔)优先,其后跟默认路径列表;去重、保序。"""
+    values = []
+    configured = os.environ.get(env_name, "")
+    if configured:
+        values.extend(configured.split(os.pathsep))
+    values.extend(defaults)
+    result = []
+    seen = set()
+    for value in values:
+        path = _expand_path(value)
+        if not path:
+            continue
+        key = os.path.normcase(os.path.realpath(path))
+        if key not in seen:
+            seen.add(key)
+            result.append(path)
+    return result
+
+
+def _first_existing_file(paths):
+    return next((path for path in paths if os.path.isfile(path)), None)
+
+
+def _existing_dirs(paths):
+    result = []
+    seen = set()
+    for path in paths:
+        if not os.path.isdir(path):
+            continue
+        real = os.path.realpath(path)
+        key = os.path.normcase(real)
+        if key not in seen:
+            seen.add(key)
+            result.append(real)
+    return result
+
+
+def _sqlite_ro_uri(path):
+    import pathlib
+    return pathlib.Path(path).resolve().as_uri() + "?mode=ro"
+
+
+def _sqlite_signature(path):
+    parts = []
+    # SHM 的 mtime 会被只读 SQLite 连接更新,不能作为数据变化信号。
+    for candidate in (path, path + "-wal"):
+        try:
+            stat = os.stat(candidate)
+        except OSError:
+            continue
+        parts.append(f"{candidate}:{stat.st_mtime_ns}:{stat.st_size}")
+    return "|".join(parts) or None
+
+
 CLAUDE_DIR = os.path.join(HOME, ".claude", "projects")
 CODEX_DIR = os.path.join(HOME, ".codex", "sessions")
 CODEX_AUTH = os.path.join(HOME, ".codex", "auth.json")
 GEMINI_DIR = os.path.join(HOME, ".gemini", "tmp")
+GEMINI_DIRS = _path_candidates(
+    "TOKEI_GEMINI_DIR", GEMINI_DIR,
+    os.path.join(HOME, ".gemini", "gemini-cli", "conversations"))
 GROK_DIR = os.path.join(HOME, ".grok", "sessions")
 QODER_IDE_DB = os.path.join(HOME, "Library", "Application Support", "Qoder",
                             "SharedClientCache", "cache", "db", "local.db")
 QODER_CLI_SESSIONS_DIR = os.path.join(HOME, ".qoder", "logs", "sessions")
 HERMES_DB = os.path.join(HOME, ".hermes", "state.db")
-OPENCODE_DIR = os.path.join(HOME, ".local", "share", "opencode", "storage", "message")
+OPENCODE_DATA_DIR = os.path.join(HOME, ".local", "share", "opencode")
+OPENCODE_DATA_DIRS = _path_candidates(
+    "TOKEI_OPENCODE_DATA_DIR", OPENCODE_DATA_DIR,
+    os.path.join(HOME, "Library", "Application Support", "opencode"))
+OPENCODE_DIR = os.path.join(OPENCODE_DATA_DIR, "storage", "message")
+OPENCODE_DB = os.path.join(OPENCODE_DATA_DIR, "opencode.db")
 OPENCLAW_DB = os.path.join(HOME, ".openclaw", "tasks", "runs.sqlite")
 OPENCLAW_AGENTS = os.path.join(HOME, ".openclaw", "agents")
 PI_AGENT_DIR = os.path.expanduser(os.environ.get("PI_CODING_AGENT_DIR", os.path.join(HOME, ".pi", "agent")))
 PI_SESSION_DIR = os.path.expanduser(os.environ.get("PI_CODING_AGENT_SESSION_DIR", os.path.join(PI_AGENT_DIR, "sessions")))
+OMP_SESSION_DIR = os.path.expanduser(os.environ.get(
+    "OMP_CODING_AGENT_SESSION_DIR", os.path.join(HOME, ".omp", "agent", "sessions")))
+WORKBUDDY_DIR = os.path.join(HOME, ".workbuddy", "projects")
+ZCODE_DB = os.path.join(HOME, ".zcode", "cli", "db", "db.sqlite")
+QWEN_HOME = os.path.expanduser(os.environ.get("QWEN_HOME", os.path.join(HOME, ".qwen")))
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 _USER_DIR = os.path.join(HOME, ".tokei")
@@ -97,6 +174,8 @@ _FAMILY = [
     ("qwen",     "qwen/qwen3.7-max"),
     ("deepseek", "deepseek/deepseek-v4-pro"),
     ("glm",      "z-ai/glm-5.2"),
+    ("mimo",     "xiaomi/mimo-v2.5-pro"),
+    ("hy3",      "tencent/hy3"),
 ]
 
 
@@ -143,6 +222,38 @@ def _resolve_id(model: str):
         if kw in low:
             return rep
     return "anthropic/claude-opus-4.8"
+
+
+def _known_id_or_raw(model: str):
+    """解析到 canonical id;未知时原样返回(不兜底成 opus)。"""
+    s = (model or "").strip()
+    if not s or s.lower() == "<synthetic>":
+        return None
+    if s in _OV_ALIASES:
+        return _OV_ALIASES[s]
+    norm = _normalize(s)
+    if norm and (norm in _OV_MODELS or norm in _PRICING_DB or norm in _DEFAULT_PRICES):
+        return norm
+    low = s.lower()
+    if "gemini" in low:
+        return "google/gemini-3.1-pro-preview" if "pro" in low else "google/gemini-3.5-flash"
+    for kw, rep in _FAMILY:
+        if kw in low:
+            return rep
+    return s
+
+
+def _pricing_id(model: str):
+    """比 _resolve_id 更保守:只在确实有价可查时才返回 id,否则 None(调用方应按 0 成本处理,
+    不要像 _resolve_id 那样兜底成 opus——避免新工具冒出的陌生模型被静默按 Opus 计费)。"""
+    canonical = _known_id_or_raw(model)
+    if canonical and (canonical in _OV_MODELS or canonical in _PRICING_DB or canonical in _DEFAULT_PRICES):
+        return canonical
+    # ZCode 目前上报 GLM-5.2,价格表暂未收录;GLM-5.1 是官方文档给出的等价价格,先用它顶上。
+    normalized = _normalize(model)
+    if normalized == "z-ai/glm-5.2" and "z-ai/glm-5.1" in _PRICING_DB:
+        return "z-ai/glm-5.1"
+    return None
 
 
 def _raw_price(model: str):
@@ -448,6 +559,22 @@ def _empty_opencode():
 
 
 def _empty_pi():
+    return _empty_opencode()
+
+
+def _empty_workbuddy():
+    return _empty_opencode()
+
+
+def _empty_qwencode():
+    return _empty_opencode()
+
+
+def _empty_zcode():
+    return _empty_opencode()
+
+
+def _empty_mimocode():
     return _empty_opencode()
 
 
@@ -2103,74 +2230,187 @@ def scan_pi(bounds, cache):
 # ---------- OpenCode ----------
 # JSON 文件: ~/.local/share/opencode/storage/message/<session>/msg_*.json
 # 每条 assistant 消息有 tokens{input,output,reasoning,cache{read,write}} + cost + modelID。
+def _opencode_db_paths():
+    """新版 OpenCode 把用量落进 SQLite;旧版仍是逐消息 JSON 文件,两者都扫。"""
+    data_dirs = _path_candidates("TOKEI_OPENCODE_DATA_DIR", OPENCODE_DATA_DIR, *OPENCODE_DATA_DIRS)
+    direct = [OPENCODE_DB] + [os.path.join(root, "opencode.db") for root in data_dirs]
+    database = _first_existing_file(direct)
+    if database:
+        return [os.path.realpath(database)]
+    for parent in [os.path.dirname(OPENCODE_DB)] + data_dirs:
+        channels = []
+        for path in sorted(glob.glob(os.path.join(parent, "opencode-*.db"))):
+            name = os.path.basename(path)
+            channel = name[len("opencode-"):-len(".db")]
+            if channel and all(ch.isalnum() or ch in "._-" for ch in channel):
+                channels.append(os.path.realpath(path))
+        if channels:
+            return [channels[0]]
+    return []
+
+
+def _opencode_json_dirs():
+    data_dirs = _path_candidates("TOKEI_OPENCODE_DATA_DIR", OPENCODE_DATA_DIR, *OPENCODE_DATA_DIRS)
+    defaults = [OPENCODE_DIR] + [os.path.join(root, "storage", "message") for root in data_dirs]
+    return _existing_dirs(_path_candidates("TOKEI_OPENCODE_DIR", *defaults))
+
+
+def _opencode_message_day(message, session_id="", created_ms=0, estimate_missing_cost=False):
+    if message.get("role") != "assistant":
+        return None
+    timestamp = (message.get("time") or {}).get("created") or created_ms
+    if not timestamp:
+        return None
+    tokens = message.get("tokens") or {}
+    cache = tokens.get("cache") or {}
+    model = message.get("modelID", "")
+    created = datetime.fromtimestamp(int(timestamp) / 1000).astimezone()
+    cost = float(message.get("cost", 0) or 0)
+    if estimate_missing_cost and not cost:
+        # MiMoCode 复用 OpenCode 的消息 schema,但不落 cost 字段,需要按价格表现算。
+        price_id = _pricing_id(model)
+        if price_id:
+            price = _raw_price(price_id)
+            cost = ((int(tokens.get("input", 0) or 0) / 1e6) * price["in"]
+                    + ((int(tokens.get("output", 0) or 0) + int(tokens.get("reasoning", 0) or 0)) / 1e6) * price["out"]
+                    + (int(cache.get("read", 0) or 0) / 1e6) * price["cache_read"]
+                    + (int(cache.get("write", 0) or 0) / 1e6) * price["cache_write"])
+    day = {
+        "date": created.strftime("%Y-%m-%d"),
+        "in": int(tokens.get("input", 0) or 0),
+        "out": int(tokens.get("output", 0) or 0),
+        "reason": int(tokens.get("reasoning", 0) or 0),
+        "cr": int(cache.get("read", 0) or 0),
+        "cw": int(cache.get("write", 0) or 0),
+        "cost": cost,
+        "session": message.get("sessionID") or session_id,
+        "models": {},
+        "hour": created.hour,
+    }
+    _add_model_usage(day["models"], model, day["in"], day["out"], day["cr"],
+                     day["cw"], day["reason"], day["cost"])
+    return day
+
+
+def _scan_opencode_database(path, estimate_missing_cost=False):
+    import sqlite3
+    days = {}
+    message_ids = set()
+    connection = sqlite3.connect(_sqlite_ro_uri(path), uri=True, timeout=1)
+    try:
+        connection.execute("PRAGMA query_only=ON")
+        rows = connection.execute("SELECT id, session_id, time_created, data FROM message")
+        for message_id, session_id, created_ms, raw in rows:
+            try:
+                message = json.loads(raw)
+            except (TypeError, ValueError):
+                continue
+            day = _opencode_message_day(message, session_id or "", created_ms or 0,
+                                        estimate_missing_cost=estimate_missing_cost)
+            if not day:
+                continue
+            if message_id:
+                message_ids.add(str(message_id))
+            bucket = days.setdefault(day["date"], _empty_token_day())
+            _add_token_usage(bucket, day["in"], day["out"], day["cr"], day["cw"], day["reason"],
+                             day["cost"], None, hour=day["hour"])
+            for mn, mv in day["models"].items():
+                _add_model_usage(bucket["models"], mn, mv["in"], mv["out"], mv["cr"], mv["cw"],
+                                 mv["reason"], mv["cost"])
+    finally:
+        connection.close()
+    return days, message_ids
+
+
 def scan_opencode(bounds, cache):
     fc = cache.setdefault("opencode", {})
     B = _empty_token_ranges()
-    if not os.path.isdir(OPENCODE_DIR):
+    db_paths = _opencode_db_paths()
+    json_dirs = _opencode_json_dirs()
+    if not db_paths and not json_dirs:
         return {"ranges": B}
 
     stale = set(fc.keys())
+    db_message_ids = set()
 
-    for sess_dir in glob.glob(os.path.join(OPENCODE_DIR, "ses_*")):
-        for f in glob.glob(os.path.join(sess_dir, "msg_*.json")):
-            stale.discard(f)
+    for db_path in db_paths:
+        cache_key = "db:" + db_path
+        stale.discard(cache_key)
+        signature = _sqlite_signature(db_path)
+        entry = fc.get(cache_key)
+        if not entry or entry.get("sig") != signature:
             try:
-                st = os.stat(f)
-            except OSError:
+                days, message_ids = _scan_opencode_database(db_path)
+            except Exception:
                 continue
-            sig = f"{st.st_mtime}:{st.st_size}"
-            entry = fc.get(f)
-            if entry and entry.get("sig") == sig:
-                day_data = entry.get("day")
-            else:
-                try:
-                    d = json.load(open(f, encoding="utf-8"))
-                except Exception:
-                    continue
-                if d.get("role") != "assistant":
-                    fc[f] = {"sig": sig, "day": None}
-                    continue
-                t = (d.get("time") or {}).get("created", 0)
-                if not t:
-                    fc[f] = {"sig": sig, "day": None}
-                    continue
-                tok = d.get("tokens") or {}
-                ca = tok.get("cache") or {}
-                model = d.get("modelID", "")
-                day_data = {
-                    "date": datetime.fromtimestamp(t / 1000).strftime("%Y-%m-%d"),
-                    "in": tok.get("input", 0) or 0,
-                    "out": tok.get("output", 0) or 0,
-                    "reason": tok.get("reasoning", 0) or 0,
-                    "cr": ca.get("read", 0) or 0,
-                    "cw": ca.get("write", 0) or 0,
-                    "cost": d.get("cost", 0) or 0,
-                    "session": d.get("sessionID", ""),
-                    "models": {},
-                }
-                _add_model_usage(day_data["models"], model, day_data["in"], day_data["out"],
-                                 day_data["cr"], day_data["cw"], day_data["reason"], day_data["cost"])
-                fc[f] = {"sig": sig, "day": day_data}
-
-            if not day_data:
-                continue
+            entry = {"sig": signature, "days": days, "message_ids": sorted(message_ids)}
+            fc[cache_key] = entry
+        db_message_ids.update(entry.get("message_ids", []))
+        for day_key, day_data in entry.get("days", {}).items():
             try:
-                dd = date.fromisoformat(day_data["date"])
+                dd = date.fromisoformat(day_key)
             except ValueError:
                 continue
             for k in classify_date(dd, bounds):
-                _merge_token_day(B[k], day_data, day_data.get("session"))
+                _merge_token_day(B[k], day_data)
+
+    # 旧版逐消息 JSON:按 message id 去重,已经在 SQLite 里出现过的不再重复计入。
+    seen_message_ids = set(db_message_ids)
+    for json_dir in json_dirs:
+        for sess_dir in glob.glob(os.path.join(json_dir, "ses_*")):
+            for f in glob.glob(os.path.join(sess_dir, "msg_*.json")):
+                file_id = os.path.splitext(os.path.basename(f))[0]
+                if file_id in seen_message_ids:
+                    continue
+                stale.discard(f)
+                try:
+                    st = os.stat(f)
+                except OSError:
+                    continue
+                sig = f"{st.st_mtime}:{st.st_size}"
+                entry = fc.get(f)
+                if entry and entry.get("sig") == sig:
+                    day_data = entry.get("day")
+                    message_id = entry.get("message_id") or file_id
+                else:
+                    try:
+                        d = json.load(open(f, encoding="utf-8"))
+                    except Exception:
+                        continue
+                    message_id = str(d.get("id") or file_id)
+                    day_data = _opencode_message_day(d)
+                    fc[f] = {"sig": sig, "day": day_data, "message_id": message_id}
+                if message_id in seen_message_ids:
+                    continue
+                seen_message_ids.add(message_id)
+
+                if not day_data:
+                    continue
+                try:
+                    dd = date.fromisoformat(day_data["date"])
+                except ValueError:
+                    continue
+                for k in classify_date(dd, bounds):
+                    _merge_token_day(B[k], day_data, day_data.get("session"))
 
     for p in stale:
         fc.pop(p, None)
 
-    # OpenCode 是"一条消息一个文件、边扫边桶"的结构,不像其它工具有独立的
-    # Assembly 循环,所以这里持久化之后只补一遍"归档里有、但当前 fc 里已经不在
-    # 了"的文件(避免和上面已经计过的 live 文件重复计入)。
+    # 持久化之后补一遍"归档里有、但当前 fc 里已经不在了"的条目(源文件/db 被清理掉时
+    # 仍不丢历史),db 条目和逐消息 JSON 条目两种形状都要认。
     _persist_tool_cache("opencode", fc)
     archived = _load_tool_archive("opencode")
     for file_key, entry in archived.items():
         if file_key in fc:
+            continue
+        if "days" in entry:
+            for day_key, day_data in entry.get("days", {}).items():
+                try:
+                    dd = date.fromisoformat(day_key)
+                except ValueError:
+                    continue
+                for k in classify_date(dd, bounds):
+                    _merge_token_day(B[k], day_data)
             continue
         day_data = entry.get("day")
         if not day_data:
@@ -2182,6 +2422,498 @@ def scan_opencode(bounds, cache):
         for k in classify_date(dd, bounds):
             _merge_token_day(B[k], day_data, day_data.get("session"))
 
+    return {"ranges": B}
+
+
+# ---------- ZCode ----------
+# SQLite: ~/.zcode/cli/db/db.sqlite, model_usage 行的时间戳是毫秒 epoch。
+def _scan_zcode_database(path):
+    import sqlite3
+    days = {}
+    sessions = {}
+    connection = sqlite3.connect(_sqlite_ro_uri(path), uri=True, timeout=1)
+    try:
+        connection.execute("PRAGMA query_only=ON")
+        rows = connection.execute("""
+            SELECT id, session_id, model_id, input_tokens, output_tokens,
+                   reasoning_tokens, cache_creation_input_tokens,
+                   cache_read_input_tokens, started_at, completed_at
+            FROM model_usage
+            ORDER BY started_at ASC
+        """)
+        for row_id, session_id, model, input_total, output_total, reasoning, cache_write, cache_read, started_at, completed_at in rows:
+            timestamp_ms = int(completed_at or 0) or int(started_at or 0)
+            if not timestamp_ms:
+                continue
+            try:
+                created = datetime.fromtimestamp(timestamp_ms / 1000).astimezone()
+            except (OSError, OverflowError, ValueError):
+                continue
+            input_total = max(int(input_total or 0), 0)
+            output_total = max(int(output_total or 0), 0)
+            reasoning = max(int(reasoning or 0), 0)
+            cache_write = max(int(cache_write or 0), 0)
+            cache_read = max(int(cache_read or 0), 0)
+            fresh_input = max(input_total - cache_read - cache_write, 0)
+            visible_output = max(output_total - reasoning, 0)
+            if fresh_input + output_total + cache_read + cache_write <= 0:
+                continue
+            price_id = _pricing_id(model)
+            cost = 0.0
+            if price_id:
+                price = _raw_price(price_id)
+                cost = (fresh_input / 1e6 * price["in"] + output_total / 1e6 * price["out"]
+                        + cache_read / 1e6 * price["cache_read"]
+                        + cache_write / 1e6 * price["cache_write"])
+            day_key = created.date().isoformat()
+            day = days.setdefault(day_key, _empty_token_day())
+            _add_token_usage(day, fresh_input, visible_output, cache_read, cache_write,
+                             reasoning, cost, str(model or "unknown"), hour=created.hour)
+            sessions.setdefault(day_key, set()).add(str(session_id or row_id or "unknown"))
+    finally:
+        connection.close()
+    return days, sessions
+
+
+def scan_zcode(bounds, cache):
+    fc = cache.setdefault("zcode", {})
+    B = _empty_token_ranges()
+    if not os.path.isfile(ZCODE_DB):
+        return {"ranges": B}
+
+    sig = _sqlite_signature(ZCODE_DB)
+    entry = fc.get(ZCODE_DB)
+    if not entry or entry.get("sig") != sig:
+        try:
+            days, sessions = _scan_zcode_database(ZCODE_DB)
+        except Exception:
+            days, sessions = {}, {}
+        fc.clear()
+        fc[ZCODE_DB] = {"sig": sig, "days": days,
+                        "sessions": {k: sorted(v) for k, v in sessions.items()}}
+
+    _persist_tool_cache("zcode", fc)
+    fc = _merged_tool_cache("zcode", fc)
+    for _, entry in fc.items():
+        for day_key, day_data in entry.get("days", {}).items():
+            try:
+                dd = date.fromisoformat(day_key)
+            except ValueError:
+                continue
+            sess = entry.get("sessions", {}).get(day_key, [])
+            for k in classify_date(dd, bounds):
+                _merge_token_day(B[k], day_data)
+                B[k]["sessions"].update(sess)
+    return {"ranges": B}
+
+
+# ---------- MiMoCode ----------
+# 复用 OpenCode 的消息 schema(同一套 CLI 内核衍生),按 XDG 数据目录规则找 mimocode.db。
+def _mimocode_data_dirs():
+    configured_home = os.environ.get("MIMOCODE_HOME")
+    if configured_home:
+        return [os.path.abspath(os.path.expanduser(os.path.join(configured_home, "data")))]
+    xdg_data = os.environ.get("XDG_DATA_HOME")
+    if xdg_data:
+        return [os.path.abspath(os.path.expanduser(os.path.join(xdg_data, "mimocode")))]
+    mac = os.path.join(HOME, "Library", "Application Support", "mimocode")
+    linux = os.path.join(HOME, ".local", "share", "mimocode")
+    return list(dict.fromkeys(os.path.abspath(p) for p in (mac, linux)))
+
+
+def _mimocode_db_paths():
+    for data_dir in _mimocode_data_dirs():
+        default = os.path.join(data_dir, "mimocode.db")
+        if os.path.isfile(default):
+            return [os.path.realpath(default)]
+        channels = []
+        for path in glob.glob(os.path.join(data_dir, "mimocode-*.db")):
+            channel = os.path.basename(path)[len("mimocode-"):-len(".db")]
+            if channel and all(ch.isalnum() or ch in "._-" for ch in channel):
+                channels.append(path)
+        if channels:
+            active = max(channels, key=lambda path: os.path.getmtime(path))
+            return [os.path.realpath(active)]
+    return []
+
+
+def scan_mimocode(bounds, cache):
+    fc = cache.setdefault("mimocode", {})
+    B = _empty_token_ranges()
+    db_paths = _mimocode_db_paths()
+    if not db_paths:
+        return {"ranges": B}
+
+    db_path = db_paths[0]
+    sig = _sqlite_signature(db_path)
+    entry = fc.get(db_path)
+    if not entry or entry.get("sig") != sig:
+        try:
+            days, _ = _scan_opencode_database(db_path, estimate_missing_cost=True)
+        except Exception:
+            days = {}
+        fc.clear()
+        fc[db_path] = {"sig": sig, "days": days}
+
+    _persist_tool_cache("mimocode", fc)
+    fc = _merged_tool_cache("mimocode", fc)
+    for _, entry in fc.items():
+        for day_key, day_data in entry.get("days", {}).items():
+            try:
+                dd = date.fromisoformat(day_key)
+            except ValueError:
+                continue
+            for k in classify_date(dd, bounds):
+                _merge_token_day(B[k], day_data)
+    return {"ranges": B}
+
+
+# ---------- WorkBuddy ----------
+# JSONL: ~/.workbuddy/projects/<encoded-cwd>/<session>.jsonl,每条带 usage 的 item 是一次模型调用。
+def _workbuddy_number(obj, *keys):
+    if not isinstance(obj, dict):
+        return None
+    for key in keys:
+        if key not in obj:
+            continue
+        value = obj.get(key)
+        if isinstance(value, bool):
+            continue
+        try:
+            return max(int(value), 0)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _workbuddy_timestamp(value):
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        seconds = float(value) / 1000 if value > 10_000_000_000 else float(value)
+        try:
+            return datetime.fromtimestamp(seconds).astimezone()
+        except (OSError, OverflowError, ValueError):
+            return None
+    if isinstance(value, str):
+        dt = parse_ts(value)
+        return dt.astimezone() if dt else None
+    return None
+
+
+def _workbuddy_usage_record(item):
+    message = item.get("message") or {}
+    if not isinstance(message, dict):
+        message = {}
+    provider = item.get("providerData") or message.get("providerData") or {}
+    if not isinstance(provider, dict):
+        provider = {}
+
+    message_usage = message.get("usage") or {}
+    normalized = provider.get("usage") or {}
+    raw = provider.get("rawUsage") or {}
+    sources = [x for x in (message_usage, normalized, raw) if isinstance(x, dict) and x]
+
+    input_total = output = 0
+    selected = None
+    for source in sources:
+        inp = _workbuddy_number(source, "input_tokens", "inputTokens", "input", "prompt_tokens")
+        out = _workbuddy_number(source, "output_tokens", "outputTokens", "output", "completion_tokens")
+        if (inp or 0) + (out or 0) > 0:
+            selected = source
+            input_total = inp or 0
+            output = out or 0
+            break
+    if selected is None:
+        return None
+
+    cache_read = max((
+        _workbuddy_number(source, "cache_read_input_tokens", "cacheReadInputTokens",
+                         "cache_read", "cacheRead", "cached_tokens", "cachedTokens") or 0
+        for source in sources), default=0)
+    cache_write = max((
+        _workbuddy_number(source, "cache_creation_input_tokens", "cacheCreationInputTokens",
+                         "cache_write_input_tokens", "cacheWriteInputTokens",
+                         "prompt_cache_write_tokens", "cache_write", "cacheWrite") or 0
+        for source in sources), default=0)
+    total_candidates = [t for t in (
+        _workbuddy_number(source, "total_tokens", "totalTokens", "total") for source in sources
+    ) if t is not None]
+    if any(total == input_total + output for total in total_candidates):
+        cache_read = min(cache_read, input_total)
+        cache_write = min(cache_write, max(input_total - cache_read, 0))
+        input_tokens = max(input_total - cache_read - cache_write, 0)
+    else:
+        input_tokens = input_total
+
+    timestamp_value = item.get("timestamp") or message.get("timestamp")
+    dt = _workbuddy_timestamp(timestamp_value)
+    if dt is None:
+        return None
+
+    model = (provider.get("requestModelName") or provider.get("requestModelId")
+             or provider.get("model") or message.get("model") or item.get("model") or "unknown")
+    price = _raw_price(str(model))
+    cost = (input_tokens / 1e6 * price["in"] + output / 1e6 * price["out"]
+            + cache_read / 1e6 * price["cache_read"] + cache_write / 1e6 * price["cache_write"])
+    item_id = item.get("id") or provider.get("messageId") or ""
+    return {
+        "date": dt.date().isoformat(), "hour": dt.hour, "ts_key": str(timestamp_value),
+        "item_id": str(item_id), "in": input_tokens, "out": output, "cr": cache_read,
+        "cw": cache_write, "reason": 0, "cost": cost, "model": str(model),
+    }
+
+
+def scan_workbuddy(bounds, cache):
+    fc = cache.setdefault("workbuddy", {})
+    B = _empty_token_ranges()
+    if not os.path.isdir(WORKBUDDY_DIR):
+        return {"ranges": B}
+
+    stale = set(fc.keys())
+    for path in sorted(glob.glob(os.path.join(WORKBUDDY_DIR, "**", "*.jsonl"), recursive=True)):
+        stale.discard(path)
+        try:
+            st = os.stat(path)
+        except OSError:
+            continue
+        sig = f"{st.st_mtime}:{st.st_size}"
+        if isinstance(fc.get(path), dict) and fc[path].get("sig") == sig:
+            continue
+
+        records = []
+        session_id = os.path.splitext(os.path.basename(path))[0]
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as fh:
+                for line_no, line in enumerate(fh, 1):
+                    if '"usage"' not in line and '"cwd"' not in line:
+                        continue
+                    try:
+                        item = json.loads(line)
+                    except Exception:
+                        continue
+                    session_id = item.get("sessionId") or session_id
+                    record = _workbuddy_usage_record(item)
+                    if record is None:
+                        continue
+                    record["session"] = str(item.get("sessionId") or session_id)
+                    records.append(record)
+        except OSError:
+            continue
+        fc[path] = {"sig": sig, "records": records}
+
+    for p in stale:
+        fc.pop(p, None)
+
+    _persist_tool_cache("workbuddy", fc)
+    fc = _merged_tool_cache("workbuddy", fc)
+
+    days = {}
+    sessions = {}
+    seen = set()
+    for path, entry in fc.items():
+        for record in entry.get("records", []):
+            key = record.get("item_id") and f"{record['session']}:{record['item_id']}:{record['ts_key']}" \
+                or f"{path}:{record.get('ts_key','')}"
+            if key in seen:
+                continue
+            seen.add(key)
+            day = days.setdefault(record["date"], _empty_token_day())
+            _add_token_usage(day, record["in"], record["out"], record["cr"], record["cw"],
+                             0, record["cost"], record["model"], hour=record["hour"])
+            sessions.setdefault(record["date"], set()).add(record.get("session") or "unknown")
+
+    for day_key, day in days.items():
+        try:
+            day_date = date.fromisoformat(day_key)
+        except ValueError:
+            continue
+        for k in classify_date(day_date, bounds):
+            _merge_token_day(B[k], day)
+            B[k]["sessions"].update(sessions.get(day_key, set()))
+    return {"ranges": B}
+
+
+# ---------- Qwen Code CLI ----------
+# 逐请求日志: ~/.qwen/usage/token-usage-*.jsonl(实时);旧版会话汇总 usage_record.jsonl 补历史。
+# 两种来源按 sessionId 去重,逐请求日志优先。
+QWEN_CODE_USAGE = os.path.join(QWEN_HOME, "usage_record.jsonl")
+
+
+def _qwen_number(value):
+    if isinstance(value, bool):
+        return 0
+    try:
+        return max(int(value or 0), 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def _qwen_token_usage_files():
+    return sorted(glob.glob(os.path.join(QWEN_HOME, "usage", "token-usage-*.jsonl")))
+
+
+def _qwen_datetime(value):
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        try:
+            seconds = float(value) / 1000 if value > 10_000_000_000 else float(value)
+            return datetime.fromtimestamp(seconds).astimezone()
+        except (OSError, OverflowError, ValueError):
+            return None
+    if isinstance(value, str):
+        dt = parse_ts(value)
+        return dt.astimezone() if dt else None
+    return None
+
+
+def _qwen_usage_parts(model, values):
+    values = values if isinstance(values, dict) else {}
+    input_total = _qwen_number(values.get("inputTokens"))
+    cached = _qwen_number(values.get("cachedTokens"))
+    if input_total == 0 and cached > 0:
+        input_total = cached
+    cached = min(cached, input_total)
+    inp = max(input_total - cached, 0)
+    out = _qwen_number(values.get("outputTokens"))
+    reason = _qwen_number(values.get("thoughtsTokens"))
+    price = _raw_price(model)
+    cost = (inp * price["in"] + cached * price["cache_read"] + (out + reason) * price["out"]) / 1e6
+    return inp, out, cached, reason, cost
+
+
+def _qwen_request_entry(record):
+    if not isinstance(record, dict):
+        return None
+    if _qwen_number(record.get("schemaVersion")) != 1:
+        return None
+    record_id = str(record.get("id") or "").strip()
+    session = str(record.get("sessionId") or "").strip()
+    model = str(record.get("model") or "unknown")
+    if not record_id or not session:
+        return None
+
+    dt = _qwen_datetime(record.get("timestamp"))
+    day_str = str(record.get("localDate") or "")
+    try:
+        date.fromisoformat(day_str)
+    except ValueError:
+        day_str = dt.date().isoformat() if dt else ""
+    if not day_str:
+        return None
+
+    inp, out, cached, reason, cost = _qwen_usage_parts(model, record)
+    return {
+        "date": day_str, "hour": dt.hour if dt else None, "in": inp, "out": out, "cr": cached,
+        "cw": 0, "reason": reason, "cost": cost, "session": session, "model": model,
+        "record_id": record_id,
+    }
+
+
+def _qwen_summary_entry(record):
+    if not isinstance(record, dict) or record.get("version") != 1:
+        return None
+    session = str(record.get("sessionId") or "").strip()
+    dt = _qwen_datetime(record.get("timestamp") or record.get("startTime"))
+    models_raw = record.get("models") or {}
+    if not session or not dt or not isinstance(models_raw, dict):
+        return None
+
+    total_in = total_out = total_cr = total_reason = 0
+    total_cost = 0.0
+    for model, values in models_raw.items():
+        inp, out, cached, reason, cost = _qwen_usage_parts(str(model), values)
+        total_in += inp; total_out += out; total_cr += cached; total_reason += reason
+        total_cost += cost
+    return {
+        "date": dt.date().isoformat(), "hour": dt.hour, "in": total_in, "out": total_out,
+        "cr": total_cr, "cw": 0, "reason": total_reason, "cost": total_cost,
+        "session": session, "model": "unknown",
+    }
+
+
+def _qwen_source_signature(paths):
+    import hashlib
+    digest = hashlib.sha256()
+    found = False
+    for path in sorted(paths):
+        try:
+            st = os.stat(path)
+        except OSError:
+            continue
+        found = True
+        digest.update(path.encode("utf-8", errors="ignore"))
+        digest.update(f"\0{st.st_mtime}\0{st.st_size}\0".encode())
+    return digest.hexdigest() if found else None
+
+
+def scan_qwencode(bounds, cache):
+    fc = cache.setdefault("qwencode", {})
+    B = _empty_token_ranges()
+    token_files = _qwen_token_usage_files()
+    summary_file = QWEN_CODE_USAGE if os.path.isfile(QWEN_CODE_USAGE) else None
+    sources = token_files + ([summary_file] if summary_file else [])
+    sig = _qwen_source_signature(sources)
+    if sig is None:
+        return {"ranges": B}
+
+    cache_key = "qwen-usage"
+    entry = fc.get(cache_key)
+    if not entry or entry.get("sig") != sig:
+        request_entries = {}
+        for path in token_files:
+            try:
+                with open(path, encoding="utf-8", errors="ignore") as fh:
+                    for line in fh:
+                        try:
+                            record = json.loads(line)
+                        except Exception:
+                            continue
+                        entry = _qwen_request_entry(record)
+                        if entry is not None:
+                            request_entries[entry["record_id"]] = entry
+            except OSError:
+                continue
+
+        request_sessions = {e["session"] for e in request_entries.values()}
+        entries = list(request_entries.values())
+        if summary_file:
+            try:
+                with open(summary_file, encoding="utf-8", errors="ignore") as fh:
+                    for line in fh:
+                        try:
+                            record = json.loads(line)
+                        except Exception:
+                            continue
+                        session = str(record.get("sessionId") or "").strip()
+                        if not session or session in request_sessions:
+                            continue
+                        entry = _qwen_summary_entry(record)
+                        if entry is not None:
+                            entries.append(entry)
+            except OSError:
+                pass
+
+        days = {}
+        sessions = {}
+        for entry in entries:
+            day = days.setdefault(entry["date"], _empty_token_day())
+            _add_token_usage(day, entry["in"], entry["out"], entry["cr"], entry["cw"],
+                             entry["reason"], entry["cost"], entry["model"], hour=entry.get("hour"))
+            sessions.setdefault(entry["date"], set()).add(entry.get("session") or "unknown")
+        fc.clear()
+        fc[cache_key] = {"sig": sig, "days": days,
+                         "sessions": {k: sorted(v) for k, v in sessions.items()}}
+
+    _persist_tool_cache("qwencode", fc)
+    fc = _merged_tool_cache("qwencode", fc)
+    for _, entry in fc.items():
+        for day_key, day_data in entry.get("days", {}).items():
+            try:
+                dd = date.fromisoformat(day_key)
+            except ValueError:
+                continue
+            sess = entry.get("sessions", {}).get(day_key, [])
+            for k in classify_date(dd, bounds):
+                _merge_token_day(B[k], day_data)
+                B[k]["sessions"].update(sess)
     return {"ranges": B}
 
 
@@ -2294,6 +3026,10 @@ def compute():
     oc = _safe_scan("openclaw", lambda: scan_openclaw(bounds, cache), _empty_openclaw, errors)
     pi = _safe_scan("pi", lambda: scan_pi(bounds, cache), _empty_pi, errors)
     ocode = _safe_scan("opencode", lambda: scan_opencode(bounds, cache), _empty_opencode, errors)
+    zc = _safe_scan("zcode", lambda: scan_zcode(bounds, cache), _empty_zcode, errors)
+    mc = _safe_scan("mimocode", lambda: scan_mimocode(bounds, cache), _empty_mimocode, errors)
+    wb = _safe_scan("workbuddy", lambda: scan_workbuddy(bounds, cache), _empty_workbuddy, errors)
+    qwc = _safe_scan("qwencode", lambda: scan_qwencode(bounds, cache), _empty_qwencode, errors)
     _save_scan_cache(cache)
 
     def claude_range(b):
@@ -2404,6 +3140,10 @@ def compute():
 
     piranges = {k: token_usage_range(pi["ranges"][k]) for k in RANGE_KEYS}
     ocranges = {k: token_usage_range(ocode["ranges"][k]) for k in RANGE_KEYS}
+    zcranges = {k: token_usage_range(zc["ranges"][k]) for k in RANGE_KEYS}
+    mcranges = {k: token_usage_range(mc["ranges"][k]) for k in RANGE_KEYS}
+    wbranges = {k: token_usage_range(wb["ranges"][k]) for k in RANGE_KEYS}
+    qwcranges = {k: token_usage_range(qwc["ranges"][k]) for k in RANGE_KEYS}
 
     cur = cc["cur"]
     cur_total = cur["in"] + cur["out"] + cur["cr"] + cur["cw"]
@@ -2457,6 +3197,18 @@ def compute():
         "opencode": {
             "ranges": ocranges,
         },
+        "zcode": {
+            "ranges": zcranges,
+        },
+        "mimocode": {
+            "ranges": mcranges,
+        },
+        "workbuddy": {
+            "ranges": wbranges,
+        },
+        "qwencode": {
+            "ranges": qwcranges,
+        },
     }
     if errors:
         result["_errors"] = errors
@@ -2466,7 +3218,11 @@ def compute():
 
 def _recalc_costs(result):
     """用本地最新价格表重算所有模型成本,修正历史/同步数据中的价格偏差。"""
-    for tool_key in ("claude", "gemini", "pi", "opencode", "hermes", "openclaw"):
+    # zcode/mimocode/workbuddy/qwencode 是新接入的工具,型号杂(GLM/Qwen 各种变体),
+    # 没查到价就保持原样、单价置 0,不能像 claude/gemini 那样兜底成 opus 价——否则
+    # 就是重犯 Fable 5 / Sonnet 5 那次按显示名兜底出错的同一类问题。
+    _STRICT_PRICING_TOOLS = ("zcode", "mimocode", "workbuddy", "qwencode")
+    for tool_key in ("claude", "gemini", "pi", "opencode", "hermes", "openclaw") + _STRICT_PRICING_TOOLS:
         tool = result.get(tool_key)
         if not tool or "ranges" not in tool:
             continue
@@ -2478,7 +3234,16 @@ def _recalc_costs(result):
             total_cost = 0.0
             for m in r["models"]:
                 mid = m.get("id", m.get("name", ""))
-                p = _raw_price(mid)
+                if tool_key in _STRICT_PRICING_TOOLS:
+                    price_id = _pricing_id(mid)
+                    if not price_id:
+                        m["pin"] = 0
+                        m["pout"] = 0
+                        total_cost += float(m.get("cost", 0) or 0)
+                        continue
+                    p = _raw_price(price_id)
+                else:
+                    p = _raw_price(mid)
                 ti = m.get("in", 0)
                 to = m.get("out", 0)
                 if tool_key == "claude":
@@ -3122,6 +3887,58 @@ def build_wrapped(period="all", refresh=True):
             for mn, mv in day.get("models", {}).items():
                 nm = f"{nice_model(mn)} (Pi)"
                 model_tok[nm] = model_tok.get(nm, 0) + token_total(mv)
+
+    # --- ZCode (in + out + cr + cw + reason) ---
+    for f, entry in _merged_tool_cache("zcode", cache.get("zcode", {})).items():
+        if not isinstance(entry, dict):
+            continue
+        for dk, day in entry.get("days", {}).items():
+            if cutoff and dk < cutoff:
+                continue
+            tok = token_total(day)
+            day_tokens[dk] = day_tokens.get(dk, 0) + tok
+            total_tokens += tok
+            total_cost += day.get("cost", 0)
+            weekday[date.fromisoformat(dk).weekday()] += tok
+
+    # --- MiMoCode (in + out + cr + cw + reason) ---
+    for f, entry in _merged_tool_cache("mimocode", cache.get("mimocode", {})).items():
+        if not isinstance(entry, dict):
+            continue
+        for dk, day in entry.get("days", {}).items():
+            if cutoff and dk < cutoff:
+                continue
+            tok = token_total(day)
+            day_tokens[dk] = day_tokens.get(dk, 0) + tok
+            total_tokens += tok
+            total_cost += day.get("cost", 0)
+            weekday[date.fromisoformat(dk).weekday()] += tok
+
+    # --- WorkBuddy (in + out + cr + cw) ---
+    for f, entry in _merged_tool_cache("workbuddy", cache.get("workbuddy", {})).items():
+        if not isinstance(entry, dict):
+            continue
+        for dk, day in entry.get("days", {}).items():
+            if cutoff and dk < cutoff:
+                continue
+            tok = token_total(day)
+            day_tokens[dk] = day_tokens.get(dk, 0) + tok
+            total_tokens += tok
+            total_cost += day.get("cost", 0)
+            weekday[date.fromisoformat(dk).weekday()] += tok
+
+    # --- Qwen Code CLI (in + out + cr + reason) ---
+    for f, entry in _merged_tool_cache("qwencode", cache.get("qwencode", {})).items():
+        if not isinstance(entry, dict):
+            continue
+        for dk, day in entry.get("days", {}).items():
+            if cutoff and dk < cutoff:
+                continue
+            tok = token_total(day)
+            day_tokens[dk] = day_tokens.get(dk, 0) + tok
+            total_tokens += tok
+            total_cost += day.get("cost", 0)
+            weekday[date.fromisoformat(dk).weekday()] += tok
 
     # --- QoderWork (in + out, no cost) ---
     for f, entry in _merged_tool_cache("qoder", cache.get("qoder", {})).items():
