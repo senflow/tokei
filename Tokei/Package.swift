@@ -14,9 +14,13 @@ let package = Package(
                 .define("ZSTD_DISABLE_ASM"),
             ]
         ),
+        .target(
+            name: "TokeiUpdateSecurity",
+            path: "Sources/TokeiUpdateSecurity"
+        ),
         .executableTarget(
             name: "Tokei",
-            dependencies: ["CZstd"],
+            dependencies: ["CZstd", "TokeiUpdateSecurity"],
             path: "Sources/Tokei"
         )
     ]

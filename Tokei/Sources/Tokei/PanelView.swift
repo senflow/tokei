@@ -1118,7 +1118,7 @@ struct PanelView: View {
     @ViewBuilder
     private var updatePill: some View {
         switch updater.state {
-        case .available(let tag, _):
+        case .available(let tag, _, _):
             Button { updater.performUpdate() } label: {
                 ZStack {
                     Circle()
