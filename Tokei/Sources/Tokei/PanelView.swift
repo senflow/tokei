@@ -6,6 +6,7 @@ struct PanelView: View {
     var scrollable = true
     @State private var sel: RangeKey = .today
     @State private var claudeModelsOpen = false
+    @State private var codexModelsOpen = false
     @State private var geminiModelsOpen = false
     @State private var piModelsOpen = false
     @State private var openCodeModelsOpen = false
@@ -358,6 +359,15 @@ struct PanelView: View {
                     if r.reason > 0 { items.append(.init("brain", "推理", Fmt.human(r.reason))) }
                     return items
                 }(), tint: Theme.codex)
+                if !r.models.isEmpty {
+                    let codexRows = r.models.map { m in
+                        let denom = m.cached + m.in
+                        let hit = denom > 0 ? Double(m.cached) / Double(denom) * 100 : 0
+                        return ModelRow(name: m.name, pin: m.pin, pout: m.pout, cost: m.cost, total: m.total, hit: hit,
+                                        tokIn: m.in, tokOut: m.out, tokCR: m.cached, tokCW: m.reason)
+                    }
+                    modelDisclosure(codexRows, open: $codexModelsOpen, tint: Theme.codex)
+                }
                 if x.p5 != nil || x.pw != nil { thinDivider }
                 if let p5 = x.p5 {
                     quotaRow(title: "5h 剩余", pct: 100 - p5, reset: x.r5, tint: Theme.codex)
