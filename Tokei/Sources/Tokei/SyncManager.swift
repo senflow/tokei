@@ -425,26 +425,36 @@ final class SyncManager {
         let escapedDir = dir.replacingOccurrences(of: "'", with: "'\\''")
         let escapedDevice = cfg.device_id.replacingOccurrences(of: "'", with: "'\\''")
         DispatchQueue.global(qos: .utility).async {
-            // 只 add 自己的设备文件、fetch+rebase+push 到 origin/main,
-            // 避免多设备并发推送时互相提交/覆盖对方的同步文件。
-            // rebase 失败(冲突)时立即 abort,不能把仓库留在半 rebase 的状态,
-            // 否则对端文件会被写入冲突标记、之后再也解析不了(JSON 直接损坏)。
-            // store.refresh() 每 30 秒会重写本机的设备文件,和这里的 commit+rebase
-            // 完全不在同一个调度上 —— 如果 refresh 恰好在 commit 之后、rebase 之前
-            // 又写了一次文件,rebase 会因为工作区变脏而直接失败,导致本机的提交永远
-            // 推不上去、也拉不到其它设备的新数据。这里用重试吸收这类竞态:每次 rebase
-            // 失败后重新 add+commit 一次最新状态,再重试,而不是失败一次就放弃。
+            // 本机是权威主机:每次同步除了推自己的设备数据文件,还把最新的采集脚本
+            // usage.30s.py 一并发布出去,供其它(Linux)设备拉取运行 —— 单一脚本来源,
+            // 避免各机器脚本版本漂移。其它设备只读/拉取这个脚本,从不回写。
+            //
+            // 只 add 自己拥有的文件(设备 json + usage.30s.py),fetch+rebase+push 到
+            // origin/main,避免多设备并发推送时互相提交/覆盖对方的文件。每台机器只写
+            // 各自专属的文件,内容天然不重叠,rebase 不会产生真正的冲突。
+            //
+            // 关键修复:rebase 一律带 autostash。store.refresh() 每 30 秒会重写本机的
+            // 设备文件,和这里的 commit+rebase 不在同一调度上 —— 若 refresh 恰好在
+            // commit 之后、rebase 之前又写了一次文件,过去 rebase 会因工作区变脏而直接
+            // 失败(这正是设备时间戳会卡死在某一天、既推不上去也拉不到对端新数据的根因)。
+            // autostash 会先把这次脏改动暂存、rebase 完再自动恢复,由于恢复的文件与远端
+            // 提交互不重叠,恢复也不会冲突。retry+abort 作为兜底,防止极端情况下把仓库
+            // 留在半 rebase 状态(否则对端 json 会被写入冲突标记而彻底损坏)。
             let script = """
             cd '\(escapedDir)' || exit 1
             git rebase --abort >/dev/null 2>&1
             git merge --abort >/dev/null 2>&1
             git fetch origin main 2>/dev/null || exit 1
+            git branch --set-upstream-to=origin/main main >/dev/null 2>&1
+            master_script="$HOME/.tokei/usage.30s.py"
+            [ -f "$master_script" ] && cp -f "$master_script" ./usage.30s.py 2>/dev/null
             device_file=$(find . -maxdepth 1 -type f -iname '\(escapedDevice).json' -print -quit)
             if [ -z "$device_file" ]; then
               device_file='./\(escapedDevice).json'
             fi
             commit_latest() {
-              git add -- "$device_file" || return 1
+              git add -- "$device_file" 2>/dev/null
+              [ -f usage.30s.py ] && git add -- usage.30s.py 2>/dev/null
               if ! git diff --cached --quiet; then
                 git commit -m 'tokei sync \(escapedDevice)' || return 1
               fi
@@ -453,7 +463,7 @@ final class SyncManager {
             commit_latest || exit 1
             attempt=0
             while true; do
-              if git rebase origin/main >/dev/null 2>&1; then
+              if git -c rebase.autoStash=true rebase origin/main >/dev/null 2>&1; then
                 break
               fi
               git rebase --abort >/dev/null 2>&1

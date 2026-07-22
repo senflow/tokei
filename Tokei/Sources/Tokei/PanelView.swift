@@ -1735,16 +1735,22 @@ struct PanelView: View {
         return url.isEmpty ? "<未配置 git remote>" : url
     }
 
-    // 幂等的远程 Linux 采集脚本:clone 前先判断是否已存在、
-    // crontab 写入前去重、同步脚本只 add 自己的设备文件并 fetch+rebase+push,
-    // 避免多设备并发同步时互相提交/覆盖对方文件(与 SyncManager.gitSync 的策略保持一致)。
+    // 幂等的远程 Linux 采集脚本:clone 前先判断是否已存在、crontab 写入前去重。
+    // 与 SyncManager.gitSync(主机端)配对的"消费端"策略:
+    //   · 每次先 fetch+rebase 拉取主机发布的最新 usage.30s.py 与其它设备数据,
+    //     再运行"刚拉到的"脚本(而不是安装时 curl 下来、之后永不更新的陈旧副本),
+    //     保证所有设备始终跑同一个由主机分发的脚本版本;
+    //   · 只提交自己专属的设备 json,绝不回写 usage.30s.py(脚本对 peer 只读);
+    //   · rebase 一律带 autostash,避免采集脚本刚写完设备文件、工作区变脏导致
+    //     rebase 失败、从此既推不上去也拉不到对端数据(与主机端同一根因、同一修复)。
     func linuxSetupCommand(remote: String) -> String {
         """
         mkdir -p ~/.tokei
         if [ ! -d ~/.tokei/sync/.git ]; then
           git clone \(remote) ~/.tokei/sync
         fi
-        curl -fsSL https://raw.githubusercontent.com/senflow/tokei/main/usage.30s.py -o ~/.tokei/usage.30s.py
+        # 仅首次引导:仓库里还没有脚本时兜底拉一份,之后一律用主机通过仓库分发的版本
+        [ -f ~/.tokei/sync/usage.30s.py ] || curl -fsSL https://raw.githubusercontent.com/senflow/tokei/main/usage.30s.py -o ~/.tokei/sync/usage.30s.py
         cat > ~/.tokei/config.json <<JSON
         {"sync_dir":"~/.tokei/sync","device_id":"$(hostname -s)","auto_sync":true,"sync_interval":5}
         JSON
@@ -1754,16 +1760,20 @@ struct PanelView: View {
         cd "$HOME/.tokei/sync"
         git rebase --abort >/dev/null 2>&1 || true
         git merge --abort >/dev/null 2>&1 || true
-        python3 "$HOME/.tokei/usage.30s.py" --json >/dev/null
         git fetch -q origin main
+        git branch --set-upstream-to=origin/main main >/dev/null 2>&1 || true
+        # 先拉取主机发布的最新脚本与其它设备数据
+        git -c rebase.autoStash=true rebase -q origin/main >/dev/null 2>&1 || { git rebase --abort >/dev/null 2>&1 || true; exit 1; }
+        # 运行"刚拉到的"最新采集脚本,而非本地陈旧副本
+        script="$HOME/.tokei/sync/usage.30s.py"
+        [ -f "$script" ] || script="$HOME/.tokei/usage.30s.py"
+        python3 "$script" --json >/dev/null
         device_file=$(find . -maxdepth 1 -type f -iname "$(hostname -s).json" -print -quit)
         [ -n "$device_file" ] || device_file="./$(hostname -s).json"
+        # 只提交自己的设备数据,绝不提交 usage.30s.py(只读/拉取)
         git add -- "$device_file"
         git diff --cached --quiet || git commit -qm "sync $(hostname -s)"
-        if ! git rebase -q origin/main >/dev/null 2>&1; then
-          git rebase --abort >/dev/null 2>&1 || true
-          exit 1
-        fi
+        git -c rebase.autoStash=true rebase -q origin/main >/dev/null 2>&1 || { git rebase --abort >/dev/null 2>&1 || true; exit 1; }
         git push -q origin HEAD:main
         SH
         chmod +x ~/.tokei/tokei-sync.sh
