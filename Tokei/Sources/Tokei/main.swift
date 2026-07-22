@@ -166,7 +166,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let img: NSImage?
         if let url = Bundle.main.url(forResource: "dove_menubar", withExtension: "png") {
             img = NSImage(contentsOf: url)
-            img?.size = NSSize(width: 18, height: 18)
+            img?.size = NSSize(width: 22, height: 22)
         } else {
             let cfg = NSImage.SymbolConfiguration(pointSize: 14, weight: .semibold)
                 .applying(NSImage.SymbolConfiguration(paletteColors: [Self.iconColor]))

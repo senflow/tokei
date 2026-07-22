@@ -22,6 +22,7 @@ cp "$PROJ_DIR/usage.30s.py" "$APP/Contents/Resources/"
 [ -f "AppIcon.icns" ] && cp "AppIcon.icns" "$APP/Contents/Resources/"
 [ -f "Sources/Tokei/Resources/github-mark.png" ] && cp "Sources/Tokei/Resources/github-mark.png" "$APP/Contents/Resources/"
 [ -f "Sources/Tokei/Resources/dove_menubar.png" ] && cp "Sources/Tokei/Resources/dove_menubar.png" "$APP/Contents/Resources/"
+[ -f "Sources/Tokei/Resources/dove_header.png" ] && cp "Sources/Tokei/Resources/dove_header.png" "$APP/Contents/Resources/"
 
 # Info.plist
 cat > "$APP/Contents/Info.plist" <<'PLIST'
@@ -32,8 +33,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundleName</key><string>Tokei</string>
     <key>CFBundleDisplayName</key><string>Tokei</string>
     <key>CFBundleIdentifier</key><string>com.tokei.app</string>
-    <key>CFBundleVersion</key><string>1.0.11</string>
-    <key>CFBundleShortVersionString</key><string>1.0.11</string>
+    <key>CFBundleVersion</key><string>1.0.12</string>
+    <key>CFBundleShortVersionString</key><string>1.0.12</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleExecutable</key><string>Tokei</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>

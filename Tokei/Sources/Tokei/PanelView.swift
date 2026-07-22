@@ -153,8 +153,7 @@ struct PanelView: View {
                 if mode != .cards { withAnimation(.easeInOut(duration: 0.35)) { mode = .cards } }
             } label: {
                 HStack(spacing: 9) {
-                    Image(systemName: "timer")
-                        .font(.system(size: 16, weight: .bold))
+                    DoveIcon(size: 23)
                         .foregroundStyle(Theme.brand)
                         .overlay(alignment: .topTrailing) {
                             if let e = Self.festiveEmoji() {
@@ -1825,6 +1824,27 @@ struct PanelView: View {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(Color.primary.opacity(0.04))
         )
+    }
+}
+
+struct DoveIcon: View {
+    var size: CGFloat = 16
+    private static let icon: NSImage? = {
+        guard let url = Bundle.main.url(forResource: "dove_header", withExtension: "png"),
+              let img = NSImage(contentsOf: url) else { return nil }
+        img.isTemplate = true
+        return img
+    }()
+    var body: some View {
+        if let img = Self.icon {
+            Image(nsImage: img)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(width: size, height: size)
+        } else {
+            Image(systemName: "timer")
+                .font(.system(size: size * 0.9, weight: .bold))
+        }
     }
 }
 
